@@ -1,4 +1,5 @@
 use whisper_rs::{FullParams, SamplingStrategy};
+use crate::config;
 
 pub struct WhisperConfig<'a> {
     n_threads:       i32,
@@ -23,7 +24,7 @@ pub fn run_whisper(
     cfg:    &WhisperConfig,
 ) -> (String, i32) {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some(crate::LANGUAGE));
+    params.set_language(Some(&config::startup().language));
     params.set_n_threads(cfg.n_threads);
     params.set_print_special(false);
     params.set_print_progress(false);

@@ -1,9 +1,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::mpsc;
 use crate::types::AudioPacket;
-use crate::TARGET_SAMPLE_RATE;
-use crate::VAD_CHUNK_SIZE;
 use tracing::{warn, info, trace};
+
+use crate::config::{
+    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES
+};
 
 #[allow(deprecated)]
 fn find_device(host: &cpal::Host) -> Option<cpal::Device> {

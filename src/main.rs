@@ -4,9 +4,10 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 use translator::{
-    whisper, vad, audio, utils,
+    whisper, vad, audio, utils, config,
+    config::{ TARGET_SAMPLE_RATE },
     types::{AudioPacket, PhraseChunk, TranscriptEvent},
-    PhraseData, // Мы ее вынесли в lib.rs
+    PhraseData,
 };
 use crate::utils::merge_strings;
 
@@ -33,8 +34,10 @@ fn init_logging() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
+    config::load_from_toml("config.toml");
     whisper::disable_whisper_log();
+    init_logging();
+    crate::utils::prepare_debug_dir();
     
     let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(1000);
     let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(32);
@@ -139,6 +142,52 @@ impl eframe::App for App {
                 }
             });
         });
+        egui::SidePanel::right("settings").show(ctx, |ui| {
+            ui.heading("Settings");
+
+            let mut prob = config::speech_probability();
+            if ui.add(egui::Slider::new(&mut prob, 0.1..=0.9)
+                .text("VAD sensitivity")).changed() {
+                config::set_speech_probability(prob);
+            }
+
+            let mut dump = config::dump_audio();
+            if ui.checkbox(&mut dump, "Dump audio").changed() {
+                config::set_dump_audio(dump);
+            }
+            let mut min_w = config::min_window() as f32 / TARGET_SAMPLE_RATE as f32;
+            if ui.add(egui::Slider::new(&mut min_w, 1.0..=8.0)
+                .step_by(0.5)
+                .suffix("s")
+                .text("Min context window")).changed() {
+                config::set_min_window_secs(min_w);
+            }
+
+            let mut max_w = config::max_window() as f32 / TARGET_SAMPLE_RATE as f32;
+            if ui.add(egui::Slider::new(&mut max_w, 4.0..=20.0)
+                .step_by(0.5)
+                .suffix("s")
+                .text("Max context window")).changed() {
+                config::set_max_window_secs(max_w.max(min_w + 1.0)); // max всегда > min
+            }
+            let mut max_phrase = config::max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
+            if ui.add(egui::Slider::new(&mut max_phrase, 5.0..=30.0)
+                .step_by(0.5)
+                .suffix("s")
+                .text("Max phrase length")).changed() {
+                config::set_max_phrase_secs(max_phrase);
+            }
+            let mut min_phrase = config::min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
+            if ui.add(egui::Slider::new(&mut min_phrase, 0.1..=10.0)
+                .step_by(0.5)
+                .suffix("s")
+                .text("Min phrase length")).changed() {
+                config::set_min_phrase_secs(min_phrase);
+            }
+        });
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        config::save_to_toml("config.toml");
     }
 }

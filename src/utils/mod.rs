@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::path::{ Path, PathBuf };
 use std::fs;
+use crate::config;
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
     if text.is_empty() { return; }
@@ -58,4 +59,15 @@ pub fn find_first_file_in_dir(relative_dir: &str, extension: &str) -> Option<Pat
         }
     }
     None
+}
+
+pub fn prepare_debug_dir() {
+    if !config::dump_audio() { return; }
+    let dir = "debug_audio";
+    
+    if Path::new(dir).exists() {
+        let _ = fs::remove_dir_all(dir);
+    }
+    
+    let _ = fs::create_dir_all(dir);
 }

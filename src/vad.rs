@@ -6,11 +6,11 @@ use ndarray::{Array, Array2, Array3};
 use tracing::{info, debug, trace};
 
 use crate::types::{AudioPacket, PhraseChunk};
-use crate::{
-    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, MAX_PHRASE_SAMPLES, 
-    MAX_SILENCE_CHUNKS, MIN_PHRASE_SAMPLES, STREAM_CHUNK_SAMPLES, FAST_TRACK_THRESHOLD_S, PREROLL_CHUNKS,
-    STITCH_MIN_SAMPLES, STITCH_MAX_CHUNKS, SPEECH_PROBABILITY
+use crate::config::{
+    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES
 };
+
+use crate::config;
 
 pub struct VadEngine {
     model: Session,
@@ -28,7 +28,7 @@ pub struct VadEngine {
     preroll: VecDeque<Arc<Vec<f32>>>,
     
     stitch_buf: Vec<f32>,
-    stitch_id: u32,
+    stitch_id: Option<u32>,
     stitch_silence: usize,
 }
 
@@ -53,9 +53,9 @@ impl VadEngine {
             is_speaking: false,
             silence_chunks: 0,
             phrase_start_ts: std::time::Instant::now(),
-            preroll: VecDeque::with_capacity(PREROLL_CHUNKS + 1),
+            preroll: VecDeque::with_capacity(config::preroll_chunks() + 1),
             stitch_buf: Vec::with_capacity(STITCH_MIN_SAMPLES * 2),
-            stitch_id: u32::MAX,
+            stitch_id: None,
             stitch_silence: 0,
         }
     }
@@ -64,7 +64,7 @@ impl VadEngine {
         let mut results = Vec::new();
         
         self.preroll.push_back(Arc::new(audio_data.clone()));
-        if self.preroll.len() > PREROLL_CHUNKS + 1 {
+        if self.preroll.len() > config::preroll_chunks() + 1 {
             self.preroll.pop_front();
         }
         
@@ -88,12 +88,12 @@ impl VadEngine {
         self.h.as_slice_mut().unwrap().copy_from_slice(&hn_vec);
         self.c.as_slice_mut().unwrap().copy_from_slice(&cn_vec);
 
-        if probability > SPEECH_PROBABILITY {
+        if probability > config::speech_probability() {
             if !self.is_speaking {
                 self.is_speaking = true;
                 self.phrase_start_ts = std::time::Instant::now();
 
-                if self.stitch_id != u32::MAX {
+                if let Some(_id) = self.stitch_id {
                     inject_preroll(&self.preroll, &mut self.stream_buf);
                     self.stream_buf.extend_from_slice(&self.stitch_buf);
                     self.stitch_buf.clear();
@@ -109,8 +109,8 @@ impl VadEngine {
             self.silence_chunks += 1;
         }
 
-        if self.is_speaking && self.phrase_total < MAX_PHRASE_SAMPLES {
-            let active_id = if self.stitch_id != u32::MAX { self.stitch_id } else { self.phrase_id };
+        if self.is_speaking && self.phrase_total < config::max_phrase_samples() {
+            let active_id = self.stitch_id.unwrap_or(self.phrase_id);
             let mut src = &audio_data[..];
             
             while !src.is_empty() {
@@ -135,11 +135,11 @@ impl VadEngine {
         }
 
         let phrase_ended = self.is_speaking 
-            && (self.silence_chunks > MAX_SILENCE_CHUNKS || self.phrase_total >= MAX_PHRASE_SAMPLES);
+            && (self.silence_chunks > config::max_silence_chunks() || self.phrase_total >= config::max_phrase_samples());
 
-        if !self.is_speaking && self.stitch_id != u32::MAX {
+        if !self.is_speaking && self.stitch_id.is_some() {
             self.stitch_silence += 1;
-            if self.stitch_silence > STITCH_MAX_CHUNKS {
+            if self.stitch_silence > config::stitch_max_chunks() {
                 results.push(self.flush_stitch());
             }
         }
@@ -148,29 +148,23 @@ impl VadEngine {
             self.is_speaking = false;
             self.preroll.clear();
 
-            if self.phrase_total >= MIN_PHRASE_SAMPLES {
+            if self.phrase_total >= config::min_phrase_samples() {
                 let tail = std::mem::take(&mut self.stream_buf);
                 self.stream_buf.reserve(STREAM_CHUNK_SAMPLES);
 
                 if self.phrase_total < STITCH_MIN_SAMPLES {
-                    if self.stitch_id == u32::MAX {
-                        self.stitch_id = self.phrase_id;
+                    if self.stitch_id.is_none() {
+                        self.stitch_id = Some(self.phrase_id);
                         self.stitch_silence = 0;
                     }
                     self.stitch_buf.extend_from_slice(&tail);
                 } else {
-                    let emit_id = if self.stitch_id != u32::MAX {
-                        let id = self.stitch_id;
-                        self.stitch_id = u32::MAX;
-                        id
-                    } else {
-                        self.phrase_id
-                    };
+                    let emit_id = self.stitch_id.take().unwrap_or(self.phrase_id);
                     results.push(self.create_final_chunk(emit_id, tail));
+                    }
+                } else {
+                    self.stream_buf.clear();
                 }
-            } else {
-                self.stream_buf.clear();
-            }
             self.phrase_id += 1;
             self.silence_chunks = 0;
         }
@@ -184,15 +178,14 @@ impl VadEngine {
             phrase_id: id,
             chunk_id: self.chunk_id,
             is_last: true,
-            short: dur_secs < FAST_TRACK_THRESHOLD_S,
+            short: dur_secs < config::fast_track_threshold_s(),
             data: Arc::new(data),
         }
     }
 
     fn flush_stitch(&mut self) -> PhraseChunk {
         let data = std::mem::take(&mut self.stitch_buf);
-        let id = self.stitch_id;
-        self.stitch_id = u32::MAX;
+        let id = self.stitch_id.take().unwrap_or(self.phrase_id);
         self.stitch_silence = 0;
         self.create_final_chunk(id, data)
     }

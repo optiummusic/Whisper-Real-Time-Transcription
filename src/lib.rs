@@ -4,6 +4,7 @@ pub mod display_task;
 pub mod vad;
 pub mod utils;
 pub mod whisper;
+pub mod config;
 
 pub use crate::types::{PhraseChunk, TranscriptEvent, AudioPacket};
 use std::sync::Arc;
@@ -11,27 +12,6 @@ use parking_lot::{Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::debug;
-
-pub const TARGET_SAMPLE_RATE: u32 = 16_000;
-pub const VAD_CHUNK_SIZE:      usize = 480;
-pub const MAX_SILENCE_CHUNKS:  usize = 12;
-pub const STREAM_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
-pub const MIN_PHRASE_SAMPLES:   usize = TARGET_SAMPLE_RATE as usize / 2;
-pub const MAX_PHRASE_SAMPLES:   usize = TARGET_SAMPLE_RATE as usize * 12;
-pub const PASS1_MIN_SAMPLES:    usize = TARGET_SAMPLE_RATE as usize * 1;
-pub const FAST_TRACK_THRESHOLD_S: f32 = 3.0;
-pub const MAX_WINDOW: usize = TARGET_SAMPLE_RATE as usize * 10;
-pub const MIN_WINDOW: usize = TARGET_SAMPLE_RATE as usize * 4;
-pub const PREROLL_CHUNKS: usize = 5;
-pub const STITCH_MIN_SAMPLES: usize = (TARGET_SAMPLE_RATE as f32 * 1.5) as usize;
-pub const STITCH_MAX_SILENCE: f32 = 1.2;  
-pub const VAD_CHUNK_DURATION_S: f32 = VAD_CHUNK_SIZE as f32 / TARGET_SAMPLE_RATE as f32;
-pub const STITCH_MAX_CHUNKS: usize = (STITCH_MAX_SILENCE / VAD_CHUNK_DURATION_S) as usize;
-pub const LANGUAGE: &str = "en";
-pub const USE_GPU_ACC: bool = true;
-pub const USE_GPU_FAST: bool = true;
-pub const SPEECH_PROBABILITY: f32 = 0.5; // Range: 0..1
-pub const DUMP_AUDIO: bool = true;
 
 pub struct PhraseData {
     pub text: String,

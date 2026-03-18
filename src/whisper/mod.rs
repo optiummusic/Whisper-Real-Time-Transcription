@@ -3,17 +3,22 @@ pub mod engine;
 use std::path::Path;
 use std::fs;
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{ HashMap, VecDeque };
 use std::ffi::c_void;
-use tokio::sync::mpsc;
+use std::sync::{Mutex, LazyLock};
+use tokio::sync::{ mpsc };
 use tracing::{info, debug, warn};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
 use crate::utils::append_context;
-use crate::{TARGET_SAMPLE_RATE, STREAM_CHUNK_SAMPLES, MIN_PHRASE_SAMPLES, PASS1_MIN_SAMPLES, MAX_WINDOW, MIN_WINDOW};
 use self::engine::{run_whisper, WhisperConfig};
 use crate::{JobSlot, Pass1Job, Pass2Job};
+
+use crate::config::{
+    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES, PASS1_MIN_SAMPLES, VAD_CHUNK_DURATION_S 
+};
+use crate::config;
 
 pub async fn pass1_task(
     mut rx:   mpsc::Receiver<PhraseChunk>,
@@ -27,7 +32,7 @@ pub async fn pass1_task(
  
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(crate::USE_GPU_FAST);
+        ctx_params.use_gpu(config::startup().use_gpu_fast);
 
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-fast", "bin")
         .expect("No Whisper model found in models/whisper-fast");
@@ -35,7 +40,7 @@ pub async fn pass1_task(
         let ctx = WhisperContext::new_with_params(
             &whisper_path,
             ctx_params,
-        ).expect("Pass1: error {whisper_path}");
+        ).expect(&format!("Pass1: error {whisper_path:?}"));
         let mut state = ctx.create_state().expect("Pass1: state init failed");
  
         while let Some(job) = slot_tx.take_blocking() {
@@ -98,13 +103,13 @@ pub async fn pass2_task(
  
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(crate::USE_GPU_ACC);
+        ctx_params.use_gpu(config::startup().use_gpu_acc);
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
         .expect("No Whisper model found in models/whisper-accurate");
         let ctx = WhisperContext::new_with_params(
             &whisper_path,
             ctx_params,
-        ).expect("Pass2: error loading {whisper_path}");
+        ).expect(&format!("Pass2: error loading {whisper_path:?}"));
         let mut state = ctx.create_state().expect("Pass2: state init failed");
 
         for job in job_rx {
@@ -152,7 +157,7 @@ pub async fn pass2_task(
                 if chunk.is_last {
                     let audio = phrases.remove(&chunk.phrase_id).unwrap_or_default();
                     let audio_len = audio.len();
-                    if audio_len < MIN_PHRASE_SAMPLES {
+                    if audio_len < config::min_phrase_samples() {
                         debug!(pid = chunk.phrase_id, "pass2: phrase too short after accumulation, skipping");
                         continue;
                     }
@@ -177,16 +182,36 @@ pub async fn pass2_task(
     }
 }
 
+static DUMP_HISTORY: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(|| {
+    Mutex::new(VecDeque::new())
+});
+
+const MAX_DUMP_FILES: usize = 20;
 pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
-    if crate::DUMP_AUDIO == false { return; }
-    let dir = "debug_audio";
+    if !config::dump_audio() { return; }
     
+    let dir = "debug_audio";
     if let Err(e) = fs::create_dir_all(dir) {
         eprintln!("Failed to create debug directory: {}", e);
         return;
     }
 
-    let path = Path::new(dir).join(filename);
+    let file_path = Path::new(dir).join(filename);
+    let file_path_str = file_path.to_string_lossy().into_owned();
+
+    {
+        let mut history = DUMP_HISTORY.lock().unwrap();
+        
+        history.retain(|x| x != &file_path_str);
+
+        if history.len() >= MAX_DUMP_FILES {
+            if let Some(old_file) = history.pop_front() {
+                let _ = fs::remove_file(old_file);
+            }
+        }
+        
+        history.push_back(file_path_str);
+    }
 
     let spec = hound::WavSpec {
         channels: 1,
@@ -195,9 +220,10 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
         sample_format: hound::SampleFormat::Float,
     };
 
-    let mut writer = hound::WavWriter::create(path, spec).unwrap();
-    for &sample in samples {
-        writer.write_sample(sample).unwrap();
+    if let Ok(mut writer) = hound::WavWriter::create(&file_path, spec) {
+        for &sample in samples {
+            let _ = writer.write_sample(sample);
+        }
     }
 }
 
@@ -275,7 +301,7 @@ impl StreamInfo {
             return None;
         }
 
-        let window = if chunk.is_last { MAX_WINDOW } else { MIN_WINDOW };
+        let window = if chunk.is_last { config::max_window() } else { config::min_window() };
 
         let audio  = if len > window {
             self.buffer[len - window..].to_vec()
