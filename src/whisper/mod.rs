@@ -77,7 +77,7 @@ pub async fn pass1_task(
  
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
+        ctx_params.use_gpu(crate::USE_GPU_FAST);
 
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-fast", "bin")
         .expect("No Whisper model found in models/whisper-fast");
@@ -212,7 +212,7 @@ pub async fn pass2_task(
  
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
+        ctx_params.use_gpu(crate::USE_GPU_ACC);
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
         .expect("No Whisper model found in models/whisper-accurate");
 
