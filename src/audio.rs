@@ -5,6 +5,7 @@ use crate::TARGET_SAMPLE_RATE;
 use crate::VAD_CHUNK_SIZE;
 use tracing::{warn, info, trace};
 
+#[allow(deprecated)]
 fn find_device(host: &cpal::Host) -> Option<cpal::Device> {
     let devices: Vec<_> = host.input_devices().ok()?.collect();
     

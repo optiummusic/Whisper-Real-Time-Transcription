@@ -1,36 +1,14 @@
-mod types;
-mod audio;
-mod display_task;
-mod vad;
-mod utils;
-mod whisper;
-
 use std::collections::BTreeMap;
 use eframe::egui;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
-use crate::types::{AudioPacket, PhraseChunk, TranscriptEvent};
+
+use translator::{
+    whisper, vad, audio, utils,
+    types::{AudioPacket, PhraseChunk, TranscriptEvent},
+    PhraseData, // Мы ее вынесли в lib.rs
+};
 use crate::utils::merge_strings;
-
-pub const TARGET_SAMPLE_RATE: u32 = 16_000;
-pub const VAD_CHUNK_SIZE:      usize = 480;
-pub const MAX_SILENCE_CHUNKS:  usize = 12;
-pub const STREAM_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
-pub const MIN_PHRASE_SAMPLES:   usize = TARGET_SAMPLE_RATE as usize / 2;
-pub const MAX_PHRASE_SAMPLES:   usize = TARGET_SAMPLE_RATE as usize * 12;
-pub const PASS1_MIN_SAMPLES:    usize = TARGET_SAMPLE_RATE as usize * 1;
-pub const FAST_TRACK_THRESHOLD_S: f32 = 3.0;
-pub const MAX_WINDOW: usize = TARGET_SAMPLE_RATE as usize * 10;
-pub const MIN_WINDOW: usize = TARGET_SAMPLE_RATE as usize * 4;
-pub const PREROLL_CHUNKS: usize = 5;
-pub const STITCH_MIN_SAMPLES: usize = (TARGET_SAMPLE_RATE as f32 * 1.5) as usize;
-pub const STITCH_MAX_SILENCE: f32 = 1.2;  
-pub const VAD_CHUNK_DURATION_S: f32 = VAD_CHUNK_SIZE as f32 / TARGET_SAMPLE_RATE as f32;
-pub const STITCH_MAX_CHUNKS: usize = (STITCH_MAX_SILENCE / VAD_CHUNK_DURATION_S) as usize;
-pub const LANGUAGE: &str = "en";
-pub const USE_GPU_ACC: bool = true;
-pub const USE_GPU_FAST: bool = true;
-
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
@@ -95,13 +73,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     tokio::signal::ctrl_c().await?;
     Ok(())
-}
-
-struct PhraseData {
-    text: String,
-    is_final: bool,
-    duration_s: f32,
-    rtf: f32,
 }
 
 struct App {

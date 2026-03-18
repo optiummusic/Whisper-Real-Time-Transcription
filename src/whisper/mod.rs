@@ -1,70 +1,19 @@
 pub mod engine;
 
+use std::path::Path;
+use std::fs;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use tokio::sync::mpsc;
-use tracing::{info, debug, trace, warn};
+use tracing::{info, debug, warn};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
-use parking_lot::{Mutex, Condvar};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
 use crate::utils::append_context;
-use crate::{TARGET_SAMPLE_RATE, STREAM_CHUNK_SAMPLES, PASS1_MIN_SAMPLES, MIN_PHRASE_SAMPLES, MAX_WINDOW, MIN_WINDOW};
+use crate::{TARGET_SAMPLE_RATE, STREAM_CHUNK_SAMPLES, MIN_PHRASE_SAMPLES, PASS1_MIN_SAMPLES, MAX_WINDOW, MIN_WINDOW};
 use self::engine::{run_whisper, WhisperConfig};
-
-struct Pass1Job {
-    phrase_id: u32,
-    chunk_id:  u32,
-    short: bool,
-    audio:     Vec<f32>,
-}
-
-struct Pass2Job {
-    phrase_id: u32,
-    audio:     Vec<f32>,
-    context:   Arc<String>,
-}
-
-struct JobSlot {
-    job:  Mutex<Option<Pass1Job>>,
-    cv:   Condvar,
-    done: AtomicBool,
-}
-
-impl JobSlot {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            job:  Mutex::new(None),
-            cv:   Condvar::new(),
-            done: AtomicBool::new(false),
-        })
-    }
-
-    fn put(&self, job: Pass1Job) {
-        let old_job = {
-            let mut guard = self.job.lock();
-            std::mem::replace(&mut *guard, Some(job))
-        };
-        self.cv.notify_one();
-        drop(old_job); 
-    }
-
-    fn take_blocking(&self) -> Option<Pass1Job> {
-        let mut guard = self.job.lock();
-        loop {
-            if let Some(j) = guard.take() { return Some(j); }
-            if self.done.load(Ordering::Relaxed) { return None; }
-            self.cv.wait(&mut guard);
-        }
-    }
-
-    fn shutdown(&self) {
-        self.done.store(true, Ordering::Relaxed);
-        self.cv.notify_all();
-    }
-}
+use crate::{JobSlot, Pass1Job, Pass2Job};
 
 pub async fn pass1_task(
     mut rx:   mpsc::Receiver<PhraseChunk>,
@@ -72,6 +21,7 @@ pub async fn pass1_task(
 ) {
     let slot    = JobSlot::new();
     let slot_tx = slot.clone();
+    let mut stream = StreamInfo::new();
  
     let (res_tx, mut res_rx) = mpsc::channel::<(u32, u32, String, bool, f32, f32)>(8);
  
@@ -91,6 +41,9 @@ pub async fn pass1_task(
         while let Some(job) = slot_tx.take_blocking() {
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
+
+            let debug_filename = format!("p1_debug_{}_{}.wav", job.phrase_id, job.chunk_id);
+            dump_audio_to_file(&job.audio, &debug_filename);
             
             let (text, _) = run_whisper(&mut state, &job.audio, &WhisperConfig::fast());
             
@@ -104,98 +57,31 @@ pub async fn pass1_task(
         }
     });
  
-    let mut current_id:  u32      = u32::MAX;
-    let mut current_buf: Vec<f32> = Vec::with_capacity(STREAM_CHUNK_SAMPLES * 16);
-    let mut closed_id: u32 = u32::MAX;
- 
     loop {
         tokio::select! {
             biased;
- 
-            maybe_chunk = rx.recv() => {
-                let Some(mut chunk) = maybe_chunk else { break };
- 
-                debug!(pid = chunk.phrase_id, cid = chunk.chunk_id,
-                       len = chunk.data.len(), is_last = chunk.is_last, "pass1 got chunk");
- 
-                let mut drained = 0usize;
-                while let Ok(next) = rx.try_recv() {
-                    drained += 1;
-                    if next.phrase_id > chunk.phrase_id {
-                        if chunk.phrase_id != current_id {
-                        } else {
-                            current_buf.clear();
-                            trace!(pid = chunk.phrase_id, cid = chunk.chunk_id, "pass 1 cleared buffer");
-                            closed_id = chunk.phrase_id;
-                        }
-                    }
-                    chunk = next;
-                }
-                if drained > 0 {
-                    debug!(pid = chunk.phrase_id, count = drained, "pass1 drained multiple chunks from queue");
-                }
- 
-                if chunk.phrase_id < current_id && current_id != u32::MAX {
-                    trace!(pid = chunk.phrase_id, cid = chunk.chunk_id, curID = current_id, "Declined past ID");
-                    continue;
-                }
- 
-                if chunk.phrase_id > current_id {
-                    current_buf.clear();
-                    current_id = chunk.phrase_id;
-                } else if current_id == u32::MAX {
-                    current_id = chunk.phrase_id;
-                }
- 
-                if !chunk.data.is_empty() {
-                    current_buf.extend_from_slice(&chunk.data);
-                }
- 
-                if chunk.is_last {
-                    closed_id = chunk.phrase_id;
-                    current_id = u32::MAX;
-                }
- 
-                if current_buf.len() < PASS1_MIN_SAMPLES && !chunk.is_last {
-                    continue;
-                }
- 
-                let window = if chunk.is_last {
-                    MAX_WINDOW
-                } else {
-                    MIN_WINDOW
-                };
 
-                let audio  = if current_buf.len() > window {
-                    current_buf[current_buf.len() - window..].to_vec()
-                } else {
-                    current_buf.to_vec()
-                };
- 
-                let phrase_id = chunk.phrase_id;
-                let chunk_id  = chunk.chunk_id;
- 
-                if chunk.is_last { current_buf.clear(); }
- 
-                slot.put(Pass1Job { phrase_id, chunk_id, short: chunk.short, audio });
+            maybe_chunk = rx.recv() => {
+                let Some(chunk) = maybe_chunk else { break };
+                debug!(pid = chunk.phrase_id, cid = chunk.chunk_id,
+                    len = chunk.data.len(), is_last = chunk.is_last, "pass1 got chunk");
+                if let Some(job) = stream.process_incoming(chunk, &mut rx) {
+                    slot.put(job);
+
+                }
             }
- 
-            Some((phrase_id, chunk_id, text, short, duration_s, rtf)) = res_rx.recv() => {
-                if !short && (phrase_id == closed_id || (current_id != u32::MAX && phrase_id < current_id)) {
-                    trace!(phrase_id, "pass1: discarding result for closed phrase");
+            
+            Some((pid, cid, text, short, dur, rtf)) = res_rx.recv() => {
+                if !stream.is_result_valid(pid, short) {
                     continue;
                 }
-                
-                if short {
-                    info!(phrase_id, duration_s, rtf, "pass1 fast track -> Final");
-                    let _ = event_tx.send(TranscriptEvent::Final {
-                        phrase_id, text, duration_s, rtf,
-                    }).await;
+
+                let event = if short {
+                    TranscriptEvent::Final { phrase_id: pid, text, duration_s: dur, rtf }
                 } else {
-                    let _ = event_tx.send(TranscriptEvent::Partial {
-                        phrase_id, chunk_id, text,
-                    }).await;
-                }
+                    TranscriptEvent::Partial { phrase_id: pid, chunk_id: cid, text }
+                };
+                let _ = event_tx.send(event).await;
             }
         }
     }
@@ -215,16 +101,18 @@ pub async fn pass2_task(
         ctx_params.use_gpu(crate::USE_GPU_ACC);
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
         .expect("No Whisper model found in models/whisper-accurate");
-
         let ctx = WhisperContext::new_with_params(
             &whisper_path,
             ctx_params,
         ).expect("Pass2: error loading {whisper_path}");
         let mut state = ctx.create_state().expect("Pass2: state init failed");
- 
+
         for job in job_rx {
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
+
+            let debug_filename = format!("pass2_debug_phrase_{}.wav", job.phrase_id);
+            dump_audio_to_file(&job.audio, &debug_filename);
  
             let (text, _) = run_whisper(&mut state, &job.audio, &WhisperConfig::accurate(&*job.context));
  
@@ -242,7 +130,6 @@ pub async fn pass2_task(
             if res_tx.blocking_send(event).is_err() { break; }
         }
     });
- 
     let mut phrases: HashMap<u32, Vec<f32>> = HashMap::new();
     let mut last_context: Arc<String> = Arc::new(String::new());
  
@@ -262,18 +149,20 @@ pub async fn pass2_task(
                 }
                 debug!(pid = chunk.phrase_id, acc_len = acc.len(), "accumulated length");
  
-                if !chunk.is_last { continue; }
- 
-                let audio = phrases.remove(&chunk.phrase_id).unwrap_or_default();
-                if audio.len() < MIN_PHRASE_SAMPLES {
-                    debug!(pid = chunk.phrase_id, "pass2: phrase too short after accumulation, skipping");
-                    continue;
-                }
- 
-                let job = Pass2Job { phrase_id: chunk.phrase_id, audio, context: Arc::clone(&last_context), };
-                if let Err(e) = job_tx.try_send(job) {
-                    warn!(%e, pid = chunk.phrase_id, "pass2 job queue full — dropping phrase");
-                }
+                if chunk.is_last {
+                    let audio = phrases.remove(&chunk.phrase_id).unwrap_or_default();
+                    let audio_len = audio.len();
+                    if audio_len < MIN_PHRASE_SAMPLES {
+                        debug!(pid = chunk.phrase_id, "pass2: phrase too short after accumulation, skipping");
+                        continue;
+                    }
+                    
+                    let job = Pass2Job { phrase_id: chunk.phrase_id, audio, context: Arc::clone(&last_context), };
+                    match job_tx.try_send(job) {
+                        Ok(_) => debug!(pid = chunk.phrase_id, "SUCCESS: Job sent to worker thread"),
+                        Err(e) => warn!(pid = chunk.phrase_id, err = %e, "ERROR: Could not send job to Pass 2 worker!"),
+                    }
+                } else { continue; }
             }
  
             Some(event) = res_rx.recv() => {
@@ -288,6 +177,30 @@ pub async fn pass2_task(
     }
 }
 
+pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
+    if crate::DUMP_AUDIO == false { return; }
+    let dir = "debug_audio";
+    
+    if let Err(e) = fs::create_dir_all(dir) {
+        eprintln!("Failed to create debug directory: {}", e);
+        return;
+    }
+
+    let path = Path::new(dir).join(filename);
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+
+    let mut writer = hound::WavWriter::create(path, spec).unwrap();
+    for &sample in samples {
+        writer.write_sample(sample).unwrap();
+    }
+}
+
 pub fn disable_whisper_log() {
     unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
@@ -297,3 +210,84 @@ unsafe extern "C" fn whisper_log_callback(
     _msg: *const std::os::raw::c_char,
     _user_data: *mut c_void,
 ) {}
+
+struct StreamInfo {
+    current_id: Option<u32>,
+    closed_id: Option<u32>,
+    buffer: Vec<f32>,
+}
+
+impl StreamInfo {
+    fn new() -> Self {
+        Self {
+            current_id: None,
+            closed_id: None,
+            buffer: Vec::with_capacity(STREAM_CHUNK_SAMPLES * 16)
+        }
+    }
+
+    fn process_incoming(&mut self, mut chunk: PhraseChunk, rx: &mut mpsc::Receiver<PhraseChunk>) -> Option<Pass1Job> {
+        while let Ok(next) = rx.try_recv() {
+            if next.phrase_id > chunk.phrase_id && Some(chunk.phrase_id) == self.current_id {
+                debug!("Drained");
+                self.reset(next.phrase_id);
+            }
+            chunk = next;
+        }
+
+        if let Some(cur) = self.current_id {
+            if chunk.phrase_id < cur {
+                return None;
+            }
+        }
+        if Some(chunk.phrase_id) != self.current_id {
+            self.reset(chunk.phrase_id);
+        }
+
+        if !chunk.data.is_empty() {
+            self.buffer.extend_from_slice(&chunk.data);
+        }
+
+        if chunk.is_last {
+            self.closed_id = Some(chunk.phrase_id);
+            self.current_id = None;
+        }
+        self.make_job(&chunk)
+    }
+
+    fn is_result_valid(&self, phrase_id: u32, short: bool) -> bool {
+        if short { return true; }
+        if Some(phrase_id) == self.closed_id { return false; }
+        if let Some(cur) = self.current_id {
+            if phrase_id < cur { return false; }
+        }
+        true
+    }
+
+    fn reset(&mut self, new_id: u32) {
+        self.buffer.clear();
+        self.current_id = Some(new_id);
+    }
+    
+    fn make_job(&mut self, chunk: &PhraseChunk) -> Option<Pass1Job> {
+        let len = self.buffer.len();
+        if len < PASS1_MIN_SAMPLES && !chunk.is_last {
+            return None;
+        }
+
+        let window = if chunk.is_last { MAX_WINDOW } else { MIN_WINDOW };
+
+        let audio  = if len > window {
+            self.buffer[len - window..].to_vec()
+        } else {
+            self.buffer.to_vec()
+        };
+
+        let phrase_id = chunk.phrase_id;
+        let chunk_id  = chunk.chunk_id;
+
+        if chunk.is_last { self.buffer.clear(); }
+
+        Some(Pass1Job { phrase_id, chunk_id, short: chunk.short, audio })
+    }
+}
