@@ -1,0 +1,19 @@
+[package]
+name = "translator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.17.3"
+tokio = { version = "1.50", features = ["full"] }
+ort = "2.0.0-rc.12"
+ndarray = "0.17.2"
+whisper-rs = { version= "0.16.0", features = ["vulkan"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry"] }
+console-subscriber = "0.5.0"
+eframe = "0.33.3"
+parking_lot = "0.12.5"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
