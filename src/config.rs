@@ -39,7 +39,7 @@ pub fn set_fast_track_threshold(v: f32)  { FAST_TRACK_MS.store((v * 1000.0) as u
 pub fn set_preroll_chunks(v: usize)      { PREROLL_CHK.store(v, Ordering::Relaxed); }
 pub fn set_dump_audio(v: bool)           { DUMP_AUDIO_FLAG.store(v, Ordering::Relaxed); }
 pub fn set_min_window_secs(v: f32)       { MIN_WINDOW_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
-pub fn set_max_window_secs(v: f32)       { MAX_WINDOW_SEC_X10.store((v.max(min_window() as f32 / TARGET_SAMPLE_RATE as f32 + 1.0)) as u32 * 10, Ordering::Relaxed); }
+pub fn set_max_window_secs(v: f32)       { MAX_WINDOW_SEC_X10.store((v.max(min_window() as f32 / TARGET_SAMPLE_RATE as f32 + 1.0) * 10.0) as u32, Ordering::Relaxed); }
 pub fn set_max_phrase_secs(v: f32)       { MAX_PHRASE_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
 pub fn set_min_phrase_secs(v: f32)       { MIN_PHRASE_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
 

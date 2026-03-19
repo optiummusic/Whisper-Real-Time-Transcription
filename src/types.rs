@@ -3,8 +3,8 @@ pub type AudioPacket = Vec<f32>;
 
 #[derive(Debug)]
 pub enum TranscriptEvent {
-    Partial { phrase_id: u32, chunk_id: u32, text: String },
-    Final   { phrase_id: u32, text: String, duration_s: f32, rtf: f32 },
+    Partial { phrase_id: u32, chunk_id: u32, text: String, sent_at: std::time::Instant },
+    Final   { phrase_id: u32, text: String, duration_s: f32, rtf: f32, sent_at: std::time::Instant },
 }
 
 #[derive(Clone)]

@@ -18,6 +18,8 @@ hound = "3.5"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.0.7"
 mimalloc = "0.1.48"
+thread-priority = "3.0.0"
+core_affinity = "0.8.3"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

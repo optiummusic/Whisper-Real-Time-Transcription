@@ -25,7 +25,7 @@ pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
                 std::io::stdout().flush().ok();
                 last_partial_id = Some(phrase_id);
             }
-            TranscriptEvent::Final { phrase_id, text, duration_s, rtf } => {
+            TranscriptEvent::Final { phrase_id, text, duration_s, rtf, .. } => {
                 finalized.insert(phrase_id);
                 info!(phrase_id, duration_s, rtf, "final -> display");
                 session_text.remove(&phrase_id);

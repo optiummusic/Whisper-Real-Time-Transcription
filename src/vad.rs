@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ndarray::{Array, Array2, Array3};
 use ort::{inputs, session::Session, value::TensorValueType, value::Value};
-use tokio::sync::mpsc;
+use tokio::sync:: { oneshot, mpsc };
 use tracing::{info, warn};
 
 use crate::config::{
@@ -125,7 +125,6 @@ impl VadEngine {
 
         let prob = *outputs["output"].try_extract_tensor::<f32>().ok()?.1.first()?;
 
-        // Обновляем h и c in-place (как ты и делал, это отлично работает)
         if let (Ok(hn), Ok(cn)) = (outputs["hn"].try_extract_tensor::<f32>(), outputs["cn"].try_extract_tensor::<f32>()) {
             if let Some(s) = self.h.as_slice_mut() { s.copy_from_slice(hn.1); }
             if let Some(s) = self.c.as_slice_mut() { s.copy_from_slice(cn.1); }
@@ -252,6 +251,7 @@ impl VadEngine {
 }
 
 pub async fn vad_task(
+    ready_tx: oneshot::Sender<()>,
     mut rx: mpsc::Receiver<AudioPacket>,
     pass1_tx: mpsc::Sender<PhraseChunk>,
     pass2_tx: mpsc::Sender<PhraseChunk>,
@@ -260,13 +260,12 @@ pub async fn vad_task(
         .expect("No VAD model found in models/vad/");
 
     let mut engine = VadEngine::new(&vad_path);
-    let mut results = Vec::with_capacity(4);
-    info!("VAD Engine initialized");
+    let mut results: Vec<PhraseChunk> = Vec::with_capacity(4);
+    ready_tx.send(()).ok();
 
     while let Some(audio_data) = rx.recv().await {
         results.clear();
-        let chunks = engine.process(audio_data, &mut results);
-
+        engine.process(audio_data, &mut results);
         for chunk in results.drain(..) {
             let _ = pass1_tx.try_send(chunk.clone());
             if !chunk.short || !chunk.is_last {

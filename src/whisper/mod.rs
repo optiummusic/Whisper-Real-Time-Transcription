@@ -6,14 +6,14 @@ use std::sync::Arc;
 use std::collections::{ HashMap, VecDeque };
 use std::ffi::c_void;
 use std::sync::{Mutex, LazyLock};
-use tokio::sync::{ mpsc };
+use tokio::sync::{ mpsc, oneshot };
 use tracing::{info, debug, warn};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
 use crate::utils::append_context;
 use self::engine::{run_whisper, WhisperConfig};
-use crate::{JobSlot, Pass1Job, Pass2Job};
+use crate::{JobSlot, Pass1Job, Pass2Job, Pass1Result};
 
 use crate::config::{
     TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES, PASS1_MIN_SAMPLES, VAD_CHUNK_DURATION_S 
@@ -21,16 +21,22 @@ use crate::config::{
 use crate::config;
 
 pub async fn pass1_task(
+    ready_tx: oneshot::Sender<()>,
     mut rx:   mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let slot    = JobSlot::new();
     let slot_tx = slot.clone();
     let mut stream = StreamInfo::new();
- 
-    let (res_tx, mut res_rx) = mpsc::channel::<(u32, u32, String, bool, f32, f32)>(8);
+
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(2);
+    let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
+    let core_ids = core_affinity::get_core_ids().expect("No CPU cores found");
  
     std::thread::spawn(move || {
+        if let Some(core) = core_ids.get(0) {
+            core_affinity::set_for_current(*core);
+        }
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_fast);
 
@@ -42,8 +48,9 @@ pub async fn pass1_task(
             ctx_params,
         ).expect(&format!("Pass1: error {whisper_path:?}"));
         let mut state = ctx.create_state().expect("Pass1: state init failed");
+        ready_tx.send(()).ok();
  
-        while let Some(job) = slot_tx.take_blocking() {
+        for job in job_rx {
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
 
@@ -55,12 +62,20 @@ pub async fn pass1_task(
             let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
 
             if !text.is_empty() {
-                if res_tx.blocking_send((job.phrase_id, job.chunk_id, text, job.short, duration_s, rtf)).is_err() {
+                if res_tx.blocking_send(Pass1Result {
+                        phrase_id: job.phrase_id,
+                        chunk_id:  job.chunk_id,
+                        text,
+                        short:      job.short,
+                        duration_s,
+                        rtf,
+                    }).is_err() {
                     break;
                 }
             }
         }
     });
+    
  
     loop {
         tokio::select! {
@@ -71,22 +86,37 @@ pub async fn pass1_task(
                 debug!(pid = chunk.phrase_id, cid = chunk.chunk_id,
                     len = chunk.data.len(), is_last = chunk.is_last, "pass1 got chunk");
                 if let Some(job) = stream.process_incoming(chunk, &mut rx) {
-                    slot.put(job);
-
+                   if let Err(e) = job_tx.try_send(job) {
+                        debug!("Pass1: skipping job (worker busy or channel full): {}", e);
+                    }
                 }
             }
             
-            Some((pid, cid, text, short, dur, rtf)) = res_rx.recv() => {
-                if !stream.is_result_valid(pid, short) {
-                    continue;
-                }
+            Some(res) = res_rx.recv() => {
+                let valid = stream.is_result_valid(res.phrase_id, res.short);
+                info!(pid = res.phrase_id, cid = res.chunk_id, valid, "pass1 result from whisper");
+                if !valid { continue; }
 
-                let event = if short {
-                    TranscriptEvent::Final { phrase_id: pid, text, duration_s: dur, rtf }
+                info!(pid = res.phrase_id, "pass1 sending to event_tx");
+
+                let event = if res.short {
+                    TranscriptEvent::Final {
+                        phrase_id:  res.phrase_id,
+                        text:       res.text,
+                        duration_s: res.duration_s,
+                        rtf:        res.rtf,
+                        sent_at: std::time::Instant::now(),
+                    }
                 } else {
-                    TranscriptEvent::Partial { phrase_id: pid, chunk_id: cid, text }
+                    TranscriptEvent::Partial {
+                        phrase_id: res.phrase_id,
+                        chunk_id:  res.chunk_id,
+                        text:      res.text,
+                        sent_at: std::time::Instant::now(),
+                    }
                 };
                 let _ = event_tx.send(event).await;
+                info!(pid = res.phrase_id, "pass1 event_tx send complete");
             }
         }
     }
@@ -95,13 +125,19 @@ pub async fn pass1_task(
 }
 
 pub async fn pass2_task(
+    ready_tx: oneshot::Sender<()>,
     mut rx:   mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(16);
     let (res_tx, mut res_rx) = mpsc::channel::<TranscriptEvent>(8);
+
+    let core_ids = core_affinity::get_core_ids().expect("No CPU cores found");
  
     std::thread::spawn(move || {
+        if let Some(core) = core_ids.get(2) {
+            core_affinity::set_for_current(*core);
+        }
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_acc);
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
@@ -111,6 +147,7 @@ pub async fn pass2_task(
             ctx_params,
         ).expect(&format!("Pass2: error loading {whisper_path:?}"));
         let mut state = ctx.create_state().expect("Pass2: state init failed");
+        ready_tx.send(()).ok();
 
         for job in job_rx {
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
@@ -131,6 +168,7 @@ pub async fn pass2_task(
                 text:       text.trim().to_string(),
                 duration_s,
                 rtf,
+                sent_at: std::time::Instant::now(),
             };
             if res_tx.blocking_send(event).is_err() { break; }
         }
@@ -293,11 +331,13 @@ impl StreamInfo {
     fn reset(&mut self, new_id: u32) {
         self.buffer.clear();
         self.current_id = Some(new_id);
+        self.closed_id = None;
     }
     
     fn make_job(&mut self, chunk: &PhraseChunk) -> Option<Pass1Job> {
         let len = self.buffer.len();
         if len < PASS1_MIN_SAMPLES && !chunk.is_last {
+            info!("{} chunk is less than {}, {}", chunk.chunk_id, PASS1_MIN_SAMPLES, chunk.data.len());
             return None;
         }
 
@@ -313,7 +353,7 @@ impl StreamInfo {
         let chunk_id  = chunk.chunk_id;
 
         if chunk.is_last { self.buffer.clear(); }
-
+        info!("{} phrase, {} chunk is sent", phrase_id, chunk_id);
         Some(Pass1Job { phrase_id, chunk_id, short: chunk.short, audio })
     }
 }

@@ -14,7 +14,7 @@ impl WhisperConfig<'_> {
     }
  
     pub fn accurate(context_prompt: &str) -> WhisperConfig<'_> {
-        WhisperConfig { n_threads: 6, no_speech_thold: 0.4, temperature: -1.0, context_prompt }
+        WhisperConfig { n_threads: 4, no_speech_thold: 0.4, temperature: -1.0, context_prompt }
     }
 }
 
@@ -23,7 +23,12 @@ pub fn run_whisper(
     audio:  &[f32],
     cfg:    &WhisperConfig,
 ) -> (String, i32) {
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let strategy = if cfg.temperature < 0.0 {
+        SamplingStrategy::Greedy { best_of: 1 }
+    } else {
+        SamplingStrategy::Greedy { best_of: 1 }
+    };
+    let mut params = FullParams::new(strategy);
     params.set_language(Some(&config::startup().language));
     params.set_n_threads(cfg.n_threads);
     params.set_print_special(false);
@@ -32,18 +37,24 @@ pub fn run_whisper(
     params.set_print_timestamps(false);
     params.set_translate(false);
     params.set_no_speech_thold(cfg.no_speech_thold);
- 
+    params.set_token_timestamps(false);
+
     if cfg.temperature >= 0.0 {
         params.set_temperature(cfg.temperature);
+        params.set_n_max_text_ctx(128);
+        params.set_offset_ms(0);
+        params.set_duration_ms(0);
     }
-    if !cfg.context_prompt.is_empty() {
+    if cfg.context_prompt.is_empty() {
+        params.set_no_context(true);
+    } else {
         params.set_initial_prompt(cfg.context_prompt);
     }
  
     if state.full(params, audio).is_err() { return (String::new(), 0); }
  
     let total = state.full_n_segments();
-    let mut text = String::new();
+    let mut text = String::with_capacity(256);
     for i in 0..total {
         if let Some(seg) = state.get_segment(i) {
             if i > 0 { text.push(' '); }

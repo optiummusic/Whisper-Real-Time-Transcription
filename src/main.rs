@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use eframe::egui;
-use tokio::sync::mpsc;
+use tokio::sync:: { oneshot, mpsc };
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
+use thread_priority::*;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -48,15 +49,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (pass2_tx, pass2_rx) = mpsc::channel::<PhraseChunk>(32);
     let (event_tx, event_rx) = mpsc::channel::<TranscriptEvent>(64);
 
-    tokio::spawn(vad::vad_task(audio_rx, pass1_tx, pass2_tx));
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (vad_ready_tx,   vad_ready_rx)   = oneshot::channel();
+    let (pass1_ready_tx, pass1_ready_rx) = oneshot::channel();
+    let (pass2_ready_tx, pass2_ready_rx) = oneshot::channel();
 
-    tokio::spawn(whisper::pass1_task(pass1_rx, event_tx.clone()));
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    
+    tokio::spawn(vad::vad_task(vad_ready_tx, audio_rx, pass1_tx, pass2_tx));
+    vad_ready_rx.await.expect("vad failed to start");
 
-    tokio::spawn(whisper::pass2_task(pass2_rx, event_tx.clone()));
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    //tokio::spawn(display_task::display_task(event_rx));
+    let pass1_event_tx = event_tx.clone();
+    std::thread::Builder::new()
+        .name("whisper-pass1".to_string())
+        .spawn_with_priority(ThreadPriority::Max, move |result| {
+            if result.is_err() { tracing::warn!("Failed to set Max priority for Pass 1"); }
+            
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+                
+            rt.block_on(whisper::pass1_task(pass1_ready_tx, pass1_rx, pass1_event_tx));
+        })?;
+    pass1_ready_rx.await.expect("pass1 failed to start");
+
+    // Используем оригинальный event_tx для Pass 2 (или тоже клонируем, если планируешь еще где-то использовать)
+    std::thread::Builder::new()
+        .name("whisper-pass2".to_string())
+        .spawn_with_priority(ThreadPriority::Min, move |result| {
+            if result.is_err() { tracing::warn!("Failed to set Min priority for Pass 2"); }
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+                
+            rt.block_on(whisper::pass2_task(pass2_ready_tx, pass2_rx, event_tx));
+        })?;
+    pass2_ready_rx.await.expect("pass2 failed to start");
+
+    //tokio::spawn(display_task::display_task(event_rx)); ----Terminal display, as of now disabled
 
     let _stream = audio::start_listening(audio_tx)?;
 
@@ -75,10 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "translator_ui",
         native_options,
-        Box::new(|_cc| Ok(Box::new(App::new(event_rx)))),
+        Box::new(|_cc| {
+            _cc.egui_ctx.set_zoom_factor(1.5);
+            Ok(Box::new(App::new(event_rx)))
+        }),
     ).map_err(|e| format!("eframe error: {}", e))?;
     
-    tokio::signal::ctrl_c().await?;
     Ok(())
 }
 
@@ -94,8 +127,18 @@ impl App {
         }
     }
 
-    pub fn update_data(&mut self) {
+    pub fn update_data(&mut self, ctx: &egui::Context) {
+        let mut got_event = false;
         while let Ok(event) = self.event_rx.try_recv() {
+            got_event = true;
+            match &event {
+                TranscriptEvent::Partial { sent_at, phrase_id, .. } => {
+                    tracing::info!(pid = phrase_id, delay_ms = sent_at.elapsed().as_millis(), "UI got partial");
+                }
+                TranscriptEvent::Final { sent_at, phrase_id, .. } => {
+                    tracing::info!(pid = phrase_id, delay_ms = sent_at.elapsed().as_millis(), "UI got final");
+                }
+            };
             match event {
                 TranscriptEvent::Partial { phrase_id, text, .. } => {
                     let entry = self.transcription.entry(phrase_id).or_insert(PhraseData {
@@ -108,7 +151,7 @@ impl App {
                         entry.text = merge_strings(&entry.text, &text);
                     }
                 }
-                TranscriptEvent::Final { phrase_id, text, duration_s, rtf } => {
+                TranscriptEvent::Final { phrase_id, text, duration_s, rtf, .. } => {
                     self.transcription.insert(phrase_id, PhraseData {
                         text,
                         is_final: true,
@@ -118,13 +161,15 @@ impl App {
                 }
             }
         }
+        if got_event {
+            ctx.request_repaint();
+        }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_zoom_factor(1.5);
-        self.update_data();
+        self.update_data(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(":) Live Transcription");

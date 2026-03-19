@@ -33,6 +33,15 @@ pub struct Pass2Job {
     context:   Arc<String>,
 }
 
+pub struct Pass1Result {
+    pub phrase_id:  u32,
+    pub chunk_id:   u32,
+    pub text:       String,
+    pub short:      bool,
+    pub duration_s: f32,
+    pub rtf:        f32,
+}
+
 pub struct JobSlot {
     job:  Mutex<Option<Pass1Job>>,
     cv:   Condvar,
