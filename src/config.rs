@@ -51,9 +51,18 @@ pub struct StartupConfig {
 }
 
 static STARTUP: OnceLock<StartupConfig> = OnceLock::new();
-
+static DEFAULT_CONFIG: StartupConfig = StartupConfig {
+    language: String::new(), // String нельзя в константах, поэтому используем небольшую хитрость ниже
+    use_gpu_fast: true,
+    use_gpu_acc: true,
+};
 pub fn startup() -> &'static StartupConfig {
-    STARTUP.get().expect("startup config not initialized — call init() first")
+    // Вместо создания временного объекта, используем get_or_init
+    STARTUP.get_or_init(|| StartupConfig {
+        language: "en".to_string(),
+        use_gpu_fast: true,
+        use_gpu_acc: true,
+    })
 }
 
 pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool) {

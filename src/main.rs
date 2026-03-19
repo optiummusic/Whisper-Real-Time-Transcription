@@ -39,9 +39,14 @@ fn init_logging() {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    config::load_from_toml("config.toml");
-    whisper::disable_whisper_log();
     init_logging();
+    tracing::info!("Logger initialized");
+
+    config::load_from_toml("config.toml");
+    tracing::info!("Config loaded: {:?}", config::startup());
+
+    //whisper::disable_whisper_log();
+
     crate::utils::prepare_debug_dir();
     
     let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(1000);

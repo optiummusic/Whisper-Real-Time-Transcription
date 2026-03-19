@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 cpal = "0.17.3"
 tokio = { version = "1.50", features = ["full"] }
-ort = "2.0.0-rc.12"
+ort = {version = "2.0.0-rc.12"}
 ndarray = "0.17.2"
-whisper-rs = { version= "0.16.0", features = ["vulkan"] }
+whisper-rs = { version= "0.16.0" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry"] }
 console-subscriber = "0.5.0"
@@ -20,6 +20,12 @@ toml = "1.0.7"
 mimalloc = "0.1.48"
 thread-priority = "3.0.0"
 core_affinity = "0.8.3"
+
+[features]
+default = ["vulkan"]
+vulkan   = ["whisper-rs/vulkan"]
+metal    = ["whisper-rs/metal"]
+cuda     = ["whisper-rs/cuda"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

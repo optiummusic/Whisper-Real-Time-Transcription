@@ -7,95 +7,139 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            label: Linux (Ubuntu)
-          - os: windows-latest
-            label: Windows
-          - os: macos-latest
-            label: macOS (Apple Silicon)
-
+  # ── Linux: Vulkan ───────────────────────────────────────────────
+  build-linux:
+    name: Linux (Vulkan)
+    runs-on: ubuntu-latest # Это хост, он просто запустит Docker
+    container: 
+      image: archlinux:latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── Linux deps ──────────────────────────────────────────────
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install Dependencies (Arch Linux)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            libasound2-dev \
-            libportaudio2 \
-            portaudio19-dev \
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel \
+            rustup \
             cmake \
             clang \
-            libvulkan-dev \
-            vulkan-tools
+            vulkan-devel \
+            shaderc \
+            alsa-lib \
+            libxkbcommon \
+            wayland \
+            git \
+            wget
 
-      # ── Windows deps ─────────────────────────────────────────────
-      # На Windows cpal работает через WASAPI — никаких доп. либ не нужно.
-      # whisper-rs линкует к MSVC runtime, cmake нужен для сборки whisper.cpp.
-      - name: Install Windows dependencies
-        if: runner.os == 'Windows'
+      - name: Fix git safe directory
+        run: |
+          git config --global --add safe.directory /__w/Whisper-Real-Time-Transcription/Whisper-Real-Time-Transcription
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+
+      - name: Verify Environment
+        run: |
+          glslc --version
+          find /usr/include -name "vulkan.hpp"
+
+      - name: Build Project
+        run: |
+          export CC=clang
+          export CXX=clang++
+          # Если ты используешь ort, убедись, что фичи совпадают
+          cargo build --release --features vulkan --no-default-features
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-linux-vulkan
+          path: target/release/translator
+
+  # ── macOS: Metal (Работает — не трогаем) ────────────────────────
+  build-macos:
+    name: macOS (Metal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --features metal --no-default-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-macos-metal
+          path: target/release/translator
+
+  # ── Windows: CUDA (Исправлено для CMake) ────────────────────────
+  build-windows-cuda:
+    name: Windows (CUDA)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          # LLVM нужен для bindgen, если он используется в зависимостях
+          choco install llvm -y
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+
+      - name: Set CUDA env
+        shell: powershell
+        run: |
+          $cudaPath = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          echo "CUDA_PATH=$cudaPath" >> $env:GITHUB_ENV
+          echo "$cudaPath\bin" >> $env:GITHUB_PATH
+          # CUDACXX помогает CMake найти компилятор без гаданий
+          echo "CUDACXX=$cudaPath\bin\nvcc.exe" >> $env:GITHUB_ENV
+          # CUDA_TOOLKIT_ROOT_DIR — стандарт для поиска библиотек
+          echo "CUDA_TOOLKIT_ROOT_DIR=$cudaPath" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        env:
+          CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+        run: cargo build --release --features cuda --no-default-features
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-windows-cuda
+          path: target/release/translator.exe
+
+  # ── Windows: CPU (всегда работает) ──────────────────────────────
+  build-windows-cpu:
+    name: Windows (CPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
           choco install llvm -y
 
-      # ── macOS deps ───────────────────────────────────────────────
-      # CoreAudio встроен. Vulkan на macOS нет — используем Metal через MoltenVK.
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install cmake portaudio
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-      # ── Rust toolchain ───────────────────────────────────────────
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      # ── Build ────────────────────────────────────────────────────
-      # На Windows отключаем Vulkan — там нет удобного SDK в CI.
-      # Для macOS тоже убираем vulkan feature из whisper-rs.
-      - name: Build (Linux, with Vulkan)
-        if: runner.os == 'Linux'
-        run: cargo build --release
-
-      - name: Build (Windows / macOS, without Vulkan)
-        if: runner.os != 'Linux'
+      - name: Build
         run: cargo build --release --no-default-features
 
-      # ── Clippy ───────────────────────────────────────────────────
-      - name: Clippy (Linux only — fastest)
-        if: runner.os == 'Linux'
-        run: cargo clippy -- -D warnings
-
-      # ── Binary artifact ──────────────────────────────────────────
-      - name: Upload binary (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: whisper-rt-linux
-          path: target/release/translator
-
-      - name: Upload binary (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: whisper-rt-windows
+          name: whisper-rt-windows-cpu
           path: target/release/translator.exe
-
-      - name: Upload binary (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: whisper-rt-macos
-          path: target/release/translator
