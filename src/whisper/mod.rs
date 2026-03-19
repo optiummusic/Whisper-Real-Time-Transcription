@@ -237,14 +237,14 @@ unsafe extern "C" fn whisper_log_callback(
     _user_data: *mut c_void,
 ) {}
 
-struct StreamInfo {
+pub struct StreamInfo {
     current_id: Option<u32>,
     closed_id: Option<u32>,
     buffer: Vec<f32>,
 }
 
 impl StreamInfo {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             current_id: None,
             closed_id: None,
@@ -252,7 +252,7 @@ impl StreamInfo {
         }
     }
 
-    fn process_incoming(&mut self, mut chunk: PhraseChunk, rx: &mut mpsc::Receiver<PhraseChunk>) -> Option<Pass1Job> {
+    pub fn process_incoming(&mut self, mut chunk: PhraseChunk, rx: &mut mpsc::Receiver<PhraseChunk>) -> Option<Pass1Job> {
         while let Ok(next) = rx.try_recv() {
             if next.phrase_id > chunk.phrase_id && Some(chunk.phrase_id) == self.current_id {
                 debug!("Drained");

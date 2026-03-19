@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 // Импортируем всё необходимое напрямую из твоей библиотеки
 // (Предполагается, что в Cargo.toml проект называется "translator")
-use translator::{StreamInfo, types::PhraseChunk};
-
+use translator::{types::PhraseChunk};
+use translator::whisper::StreamInfo;
 fn bench_process_incoming(c: &mut Criterion) {
     let mut stream = StreamInfo::new();
     

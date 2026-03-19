@@ -17,13 +17,14 @@ parking_lot = "0.12.5"
 hound = "3.5"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.0.7"
+mimalloc = "0.1.48"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "stream_bench"
-harness = false
+harness = true
 
 [[bench]]
 name = "vad_bench"
@@ -31,7 +32,7 @@ harness = false
 
 [[bench]]
 name = "whisper_bench"
-harness = false
+harness = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }

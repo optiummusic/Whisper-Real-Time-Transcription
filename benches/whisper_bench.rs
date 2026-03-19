@@ -4,7 +4,6 @@ use translator::whisper::engine::{run_whisper, WhisperConfig};
 use translator::utils::find_first_file_in_dir; // используем имя библиотеки
 
 fn bench_whisper_passes(c: &mut Criterion) {
-    // 1. Подгружаем реальное аудио
     let audio_bytes = include_bytes!("test_audio.raw");
     let audio_data: Vec<f32> = audio_bytes
         .chunks_exact(4)
@@ -13,13 +12,11 @@ fn bench_whisper_passes(c: &mut Criterion) {
     
     let duration_s = audio_data.len() as f32 / 16000.0;
 
-    // 2. Находим пути к моделям
     let fast_path = find_first_file_in_dir("models/whisper-fast", "bin")
         .expect("No Whisper model found in models/whisper-fast");
     let acc_path = find_first_file_in_dir("models/whisper-accurate", "bin")
         .expect("No Whisper model found in models/whisper-accurate");
 
-    // 3. Инициализация контекстов (GPU настройки подхватятся из твоих констант, если нужно)
     let ctx_fast = WhisperContext::new_with_params(&fast_path, WhisperContextParameters::default())
         .expect("Failed to load fast model");
     let mut state_fast = ctx_fast.create_state().unwrap();
@@ -30,28 +27,32 @@ fn bench_whisper_passes(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("Whisper_Inference");
     
-    // Полезно для статистики: сколько семплов в секунду обрабатываем
     group.throughput(criterion::Throughput::Elements(audio_data.len() as u64));
-    // Увеличим время замера, так как Whisper — штука тяжелая
     group.sample_size(10); 
 
     group.bench_function(format!("pass1_fast_{:.1}s", duration_s), |b| {
-        b.iter(|| {
-            run_whisper(
-                &mut state_fast, 
-                black_box(&audio_data), // исправлено
-                black_box(&WhisperConfig::fast())
-            )
+        b.iter_custom(|iters| {
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                run_whisper(&mut state_fast, &audio_data, &WhisperConfig::fast());
+            }
+            let elapsed = start.elapsed();
+            let rtf = elapsed.as_secs_f32() / (iters as f32 * duration_s);
+            eprintln!("RTF fast: {:.3}x realtime", rtf);
+            elapsed
         })
     });
 
     group.bench_function(format!("pass2_accurate_{:.1}s", duration_s), |b| {
-        b.iter(|| {
-            run_whisper(
-                &mut state_acc, 
-                black_box(&audio_data), // исправлено
-                black_box(&WhisperConfig::accurate("Testing context performance."))
-            )
+        b.iter_custom(|iters| {
+            let start = std::time::Instant::now();
+            for _ in 0..iters {
+                run_whisper(&mut state_acc, &audio_data, &WhisperConfig::accurate("Testing context performance."));
+            }
+            let elapsed = start.elapsed();
+            let rtf = elapsed.as_secs_f32() / (iters as f32 * duration_s);
+            eprintln!("RTF acc: {:.3}x realtime", rtf);
+            elapsed
         })
     });
 

@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 use eframe::egui;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 use translator::{
     whisper, vad, audio, utils, config,

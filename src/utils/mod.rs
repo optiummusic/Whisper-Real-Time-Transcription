@@ -32,19 +32,18 @@ pub fn merge_strings(old: &str, new: &str) -> String {
 }
 
 pub fn get_model_path(relative_path: &str) -> PathBuf {
-    let mut exe_path = std::env::current_exe()
-    .expect("Failed to get current exe path");
-    exe_path.pop();
+    let exe_path = std::env::current_exe().expect("Failed to get current exe path");
+    let exe_dir = exe_path.parent().expect("Failed to get exe parent");
 
-    let path_near_exe = exe_path.join(relative_path);
-    tracing::trace!(target: "path_finder", "Checking path near executable: {:?}", path_near_exe);
+    let path_near_exe = exe_dir.join(relative_path);
+    if path_near_exe.exists() { return path_near_exe; }
 
-    if path_near_exe.exists() {
-        return path_near_exe;
+    if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()) {
+        let path_in_root = project_root.join(relative_path);
+        if path_in_root.exists() { return path_in_root; }
     }
-    let fallback_path = PathBuf::from(relative_path);
-    tracing::trace!(target: "path_finder", "Not found near exe, falling back to: {:?}", fallback_path);
-    fallback_path
+
+    PathBuf::from(relative_path)
 }
 
 pub fn find_first_file_in_dir(relative_dir: &str, extension: &str) -> Option<PathBuf> {
