@@ -1,0 +1,101 @@
+name: Cross-platform build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: Linux (Ubuntu)
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest
+            label: macOS (Apple Silicon)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Linux deps ──────────────────────────────────────────────
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libasound2-dev \
+            libportaudio2 \
+            portaudio19-dev \
+            cmake \
+            clang \
+            libvulkan-dev \
+            vulkan-tools
+
+      # ── Windows deps ─────────────────────────────────────────────
+      # На Windows cpal работает через WASAPI — никаких доп. либ не нужно.
+      # whisper-rs линкует к MSVC runtime, cmake нужен для сборки whisper.cpp.
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install llvm -y
+
+      # ── macOS deps ───────────────────────────────────────────────
+      # CoreAudio встроен. Vulkan на macOS нет — используем Metal через MoltenVK.
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake portaudio
+
+      # ── Rust toolchain ───────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # ── Build ────────────────────────────────────────────────────
+      # На Windows отключаем Vulkan — там нет удобного SDK в CI.
+      # Для macOS тоже убираем vulkan feature из whisper-rs.
+      - name: Build (Linux, with Vulkan)
+        if: runner.os == 'Linux'
+        run: cargo build --release
+
+      - name: Build (Windows / macOS, without Vulkan)
+        if: runner.os != 'Linux'
+        run: cargo build --release --no-default-features
+
+      # ── Clippy ───────────────────────────────────────────────────
+      - name: Clippy (Linux only — fastest)
+        if: runner.os == 'Linux'
+        run: cargo clippy -- -D warnings
+
+      # ── Binary artifact ──────────────────────────────────────────
+      - name: Upload binary (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-linux
+          path: target/release/translator
+
+      - name: Upload binary (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-windows
+          path: target/release/translator.exe
+
+      - name: Upload binary (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-rt-macos
+          path: target/release/translator
