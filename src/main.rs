@@ -60,8 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pass1_event_tx = event_tx.clone();
     std::thread::Builder::new()
         .name("whisper-pass1".to_string())
-        .spawn_with_priority(ThreadPriority::Max, move |result| {
-            if result.is_err() { tracing::warn!("Failed to set Max priority for Pass 1"); }
+        .spawn_with_priority(ThreadPriority::Min, move |result| {
+            if result.is_err() { tracing::warn!("Failed to set Min priority for Pass 1"); }
             
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -72,11 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     pass1_ready_rx.await.expect("pass1 failed to start");
 
-    // Используем оригинальный event_tx для Pass 2 (или тоже клонируем, если планируешь еще где-то использовать)
     std::thread::Builder::new()
         .name("whisper-pass2".to_string())
-        .spawn_with_priority(ThreadPriority::Min, move |result| {
-            if result.is_err() { tracing::warn!("Failed to set Min priority for Pass 2"); }
+        .spawn(move || {
 
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

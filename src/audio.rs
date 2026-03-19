@@ -28,7 +28,7 @@ fn find_device(host: &cpal::Host) -> Option<cpal::Device> {
 
     let monitor = devices.iter().find(|d| {
         let name = get_desc_name(d);
-        name.contains("monitor") || name.contains("loopback")
+        name.contains("monitor") || name.contains("loopback") || name.contains("stereo mix") || name.contains("wave out mix") 
     });
 
     if let Some(d) = monitor {

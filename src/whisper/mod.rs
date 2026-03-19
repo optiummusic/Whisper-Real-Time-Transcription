@@ -25,18 +25,12 @@ pub async fn pass1_task(
     mut rx:   mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
-    let slot    = JobSlot::new();
-    let slot_tx = slot.clone();
     let mut stream = StreamInfo::new();
 
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(2);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(1);
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
-    let core_ids = core_affinity::get_core_ids().expect("No CPU cores found");
  
     std::thread::spawn(move || {
-        if let Some(core) = core_ids.get(0) {
-            core_affinity::set_for_current(*core);
-        }
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_fast);
 
@@ -120,8 +114,6 @@ pub async fn pass1_task(
             }
         }
     }
- 
-    slot.shutdown();
 }
 
 pub async fn pass2_task(
@@ -129,15 +121,10 @@ pub async fn pass2_task(
     mut rx:   mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(16);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(4);
     let (res_tx, mut res_rx) = mpsc::channel::<TranscriptEvent>(8);
-
-    let core_ids = core_affinity::get_core_ids().expect("No CPU cores found");
  
     std::thread::spawn(move || {
-        if let Some(core) = core_ids.get(2) {
-            core_affinity::set_for_current(*core);
-        }
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_acc);
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
