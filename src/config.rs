@@ -70,8 +70,7 @@ pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool) {
         .expect("init() called twice");
 }
 
-// ── TOML ──────────────────────────────────────────────────────────────────────
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 #[serde(default)]
 pub struct TomlConfig {
     pub language:             Option<String>,
@@ -88,7 +87,7 @@ pub struct TomlConfig {
     pub min_phrase_secs:      Option<f32>,
     pub max_phrase_secs:      Option<f32>, 
 }
-
+ 
 pub fn load_from_toml(path: &str) {
     let cfg: TomlConfig = std::fs::read_to_string(path)
         .ok()
@@ -100,7 +99,7 @@ pub fn load_from_toml(path: &str) {
             }
         })
         .unwrap_or_default();
-
+ 
     if let Some(v) = cfg.speech_probability   { set_speech_probability(v); }
     if let Some(v) = cfg.max_silence_chunks   { set_max_silence_chunks(v); }
     if let Some(v) = cfg.stitch_max_silence   { set_stitch_max_silence(v); }
@@ -111,37 +110,32 @@ pub fn load_from_toml(path: &str) {
     if let Some(v) = cfg.max_window_secs      { set_max_window_secs(v); }
     if let Some(v) = cfg.min_phrase_secs      { set_min_phrase_secs(v); }
     if let Some(v) = cfg.max_phrase_secs      { set_max_phrase_secs(v); }
-
+ 
     init(
         cfg.language.unwrap_or_else(|| "en".to_string()),
         cfg.use_gpu_fast.unwrap_or(true),
         cfg.use_gpu_acc.unwrap_or(true),
     );
 }
-
+ 
 pub fn save_to_toml(path: &str) {
-    let content = format!(
-        r#"language = "{}"
-        use_gpu_fast = {}
-        use_gpu_acc = {}
-        speech_probability = {:.3}
-        max_silence_chunks = {}
-        min_window_secs = {:.1}
-        max_window_secs = {:.1}
-        min_phrase_secs = {:.1}
-        max_phrase_secs = {:.1}
-        dump_audio = {}
-        "#,
-        startup().language,
-        startup().use_gpu_fast,
-        startup().use_gpu_acc,
-        speech_probability(),
-        max_silence_chunks(),
-        min_window() as f32 / TARGET_SAMPLE_RATE as f32,
-        max_window() as f32 / TARGET_SAMPLE_RATE as f32,
-        min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32,
-        max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32,
-        dump_audio(),
-    );
-    let _ = std::fs::write(path, content);
+    let cfg = TomlConfig {
+        language:             Some(startup().language.clone()),
+        use_gpu_fast:         Some(startup().use_gpu_fast),
+        use_gpu_acc:          Some(startup().use_gpu_acc),
+        speech_probability:   Some(speech_probability()),
+        max_silence_chunks:   Some(max_silence_chunks()),
+        stitch_max_silence:   None, // внутренний параметр, не показываем в UI
+        fast_track_threshold: None,
+        preroll_chunks:       None,
+        dump_audio:           Some(dump_audio()),
+        min_window_secs:      Some(min_window() as f32 / TARGET_SAMPLE_RATE as f32),
+        max_window_secs:      Some(max_window() as f32 / TARGET_SAMPLE_RATE as f32),
+        min_phrase_secs:      Some(min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
+        max_phrase_secs:      Some(max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
+    };
+    match toml::to_string_pretty(&cfg) {
+        Ok(content) => { let _ = std::fs::write(path, content); }
+        Err(e) => eprintln!("Failed to serialize config: {e}"),
+    }
 }

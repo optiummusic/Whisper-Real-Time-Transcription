@@ -267,9 +267,18 @@ pub async fn vad_task(
         results.clear();
         engine.process(audio_data, &mut results);
         for chunk in results.drain(..) {
-            let _ = pass1_tx.try_send(chunk.clone());
-            if !chunk.short || !chunk.is_last {
-                let _ = pass2_tx.try_send(chunk);
+            if let Err(e) = pass1_tx.try_send(chunk.clone()) {
+                warn!("VAD: Failed to send to pass1: {}", e);
+            }
+            match chunk {
+                c @ PhraseChunk { short: false, .. } | c @ PhraseChunk { is_last: false, .. } => {
+                    if let Err(e) = pass2_tx.try_send(c) {
+                        warn!("VAD: Failed to send to pass2: {}", e);
+                    }
+                }
+                _ => {
+                    tracing::trace!("VAD: chunk skipped for pass2 (short and last)");
+                }
             }
         }
     }

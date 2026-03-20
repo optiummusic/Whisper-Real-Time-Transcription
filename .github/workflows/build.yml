@@ -114,12 +114,15 @@ jobs:
       - name: Build
         env:
           CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --features cuda --no-default-features
 
       - uses: actions/upload-artifact@v4
         with:
           name: whisper-rt-windows-cuda
-          path: target/release/translator.exe
+          path: |
+            target/release/translator.exe
+            target/release/*.dll
 
   # ── Windows: CPU (всегда работает) ──────────────────────────────
   build-windows-cpu:
@@ -137,9 +140,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
+        env:
+            RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --no-default-features
 
       - uses: actions/upload-artifact@v4
         with:
           name: whisper-rt-windows-cpu
-          path: target/release/translator.exe
+          path: |
+            target/release/translator.exe
+            target/release/*.dll

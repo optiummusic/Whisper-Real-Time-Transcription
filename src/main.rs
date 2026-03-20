@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     crate::utils::prepare_debug_dir();
     
-    let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(1000);
+    let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(64);
     let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(32);
     let (pass2_tx, pass2_rx) = mpsc::channel::<PhraseChunk>(32);
     let (event_tx, event_rx) = mpsc::channel::<TranscriptEvent>(64);
@@ -79,8 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::Builder::new()
         .name("whisper-pass2".to_string())
-        .spawn(move || {
-
+        .spawn_with_priority(ThreadPriority::Crossplatform(50u8.try_into().unwrap()), move |result| {
+            if result.is_err() { tracing::warn!("Failed to set priority for Pass 2"); }
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

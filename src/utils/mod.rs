@@ -16,16 +16,21 @@ pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
 
 pub fn merge_strings(old: &str, new: &str) -> String {
     if old.is_empty() { return new.to_string(); }
-    if new.contains(old) { return new.to_string(); }
-    
+    if new.is_empty() { return old.to_string(); }
+    if new.contains(old.trim()) { return new.to_string(); }
+ 
     let old_words: Vec<&str> = old.split_whitespace().collect();
     let new_words: Vec<&str> = new.split_whitespace().collect();
-    
-    for i in 0..old_words.len() {
-        if new_words.starts_with(&old_words[i..]) {
-            let mut res = old_words[0..i].to_vec();
-            res.extend(new_words);
-            return res.join(" ");
+ 
+    let max_overlap = old_words.len().min(new_words.len());
+ 
+    for overlap in (1..=max_overlap).rev() {
+        let old_suffix = &old_words[old_words.len() - overlap..];
+        let new_prefix = &new_words[..overlap];
+        if old_suffix == new_prefix {
+            let mut result = old_words[..old_words.len() - overlap].to_vec();
+            result.extend_from_slice(&new_words);
+            return result.join(" ");
         }
     }
     new.to_string()
