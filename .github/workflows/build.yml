@@ -147,7 +147,7 @@ jobs:
           $env:CFLAGS="/arch:AVX2"
           $env:CXXFLAGS="/arch:AVX2"
           
-          cargo build --release
+          cargo build --release --no-default-features
 
       - uses: actions/upload-artifact@v4
         with:
