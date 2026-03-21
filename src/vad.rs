@@ -109,32 +109,51 @@ impl VadEngine {
 
     pub fn run_vad(&mut self, audio: &[f32]) -> Option<f32> {
         if audio.len() != VAD_CHUNK_SIZE {
+            tracing::error!("VAD: Wrong buffer size! Expected {}, got {}", VAD_CHUNK_SIZE, audio.len());
             return None;
         }
-        self.input_buf.copy_from_slice(audio);
-
-        let input_array = Array2::from_shape_vec((1, VAD_CHUNK_SIZE), self.input_buf.clone()).ok()?;
-        let input_val = Value::from_array(input_array).ok()?;
-        
-        let h_val = Value::from_array(self.h.clone()).ok()?;
-        let c_val = Value::from_array(self.c.clone()).ok()?;
-
-        let outputs = self.model.run(inputs![
+    
+        let input_array = Array2::from_shape_vec((1, VAD_CHUNK_SIZE), audio.to_vec()).ok()?;
+        let input_val = match Value::from_array(input_array) {
+            Ok(v) => v,
+            Err(e) => { tracing::error!("VAD: Failed to create input tensor: {:?}", e); return None; }
+        };
+    
+        let h_val = match Value::from_array(self.h.clone()) {
+            Ok(v) => v,
+            Err(e) => { tracing::error!("VAD: Failed to create H tensor: {:?}", e); return None; }
+        };
+        let c_val = match Value::from_array(self.c.clone()) {
+            Ok(v) => v,
+            Err(e) => { tracing::error!("VAD: Failed to create C tensor: {:?}", e); return None; }
+        };
+    
+        let outputs = match self.model.run(inputs![
             "input" => &input_val,
             "sr"    => &self.sr,
             "h"     => &h_val,
             "c"     => &c_val,
-        ]).ok()?;
-
-        let prob = *outputs["output"].try_extract_tensor::<f32>().ok()?.1.first()?;
-
+        ]) {
+            Ok(v) => v,
+            Err(e) => { 
+                tracing::error!("VAD: Model run failed! Error: {:?}", e); 
+                return None; 
+            }
+        };
+    
+        let prob_res = outputs["output"].try_extract_tensor::<f32>();
+        let prob = match prob_res {
+            Ok(view) => *view.1.first().unwrap_or(&0.0),
+            Err(e) => { tracing::error!("VAD: Failed to extract probability: {:?}", e); return None; }
+        };
+    
         if let (Ok(hn), Ok(cn)) = (outputs["hn"].try_extract_tensor::<f32>(), outputs["cn"].try_extract_tensor::<f32>()) {
             if let Some(s) = self.h.as_slice_mut() { s.copy_from_slice(hn.1); }
             if let Some(s) = self.c.as_slice_mut() { s.copy_from_slice(cn.1); }
         } else {
             tracing::error!("VAD: Failed to extract hidden states (hn/cn)!");
         }
-
+    
         Some(prob)
     }
 
