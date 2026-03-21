@@ -137,6 +137,9 @@ struct App {
     available_devices: Vec<String>,
     selected_device: String,
     is_running: bool,
+
+    preview_stream: Option<cpal::Stream>,
+    last_selected: String,
 }
 impl App {
     pub fn new(event_rx: mpsc::Receiver<TranscriptEvent>, device_tx: oneshot::Sender<String>) -> Self {
@@ -148,14 +151,17 @@ impl App {
         } else {
             devices.first().cloned().unwrap_or_default()
         };
+        let preview = audio::start_preview(&selected);
 
         Self {
             event_rx,
             transcription: BTreeMap::new(),
             device_tx: Some(device_tx),
             available_devices: devices,
+            last_selected: selected.clone(),
             selected_device: selected,
             is_running: false,
+            preview_stream: preview,
         }
     }
 
@@ -198,6 +204,11 @@ impl App {
         }
     }
     fn select_device(&mut self, ctx: &egui::Context) {
+        if self.selected_device != self.last_selected {
+            self.preview_stream = audio::start_preview(&self.selected_device);
+            self.last_selected = self.selected_device.clone();
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
@@ -212,6 +223,8 @@ impl App {
                             ui.selectable_value(&mut self.selected_device, dev.clone(), dev);
                         }
                     });
+                let level = audio::get_ui_level();
+                ui.add(egui::ProgressBar::new(level).desired_width(ui.available_width()));
 
                 if ui.button("🔄").on_hover_text("Refresh devices").clicked() {
                     self.refresh_devices();
@@ -219,6 +232,7 @@ impl App {
                 ui.add_space(20.0);
 
                 if ui.button("Start transcription").clicked() {
+                    self.preview_stream = None;
                     config::set_device(self.selected_device.clone());
                     if let Some(tx) = self.device_tx.take() {
                         let _ = tx.send(self.selected_device.clone());
@@ -235,6 +249,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
         if !self.is_running { 
             self.select_device(ctx);
             return; 
@@ -304,7 +319,6 @@ impl eframe::App for App {
                 config::set_min_phrase_secs(min_phrase);
             }
         });
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

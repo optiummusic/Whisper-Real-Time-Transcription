@@ -13,10 +13,12 @@ use rubato::{
     Indexing
 };
 use audioadapter_buffers::direct::InterleavedSlice;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::config::{
     TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE
 };
+static PEAK_LEVEL: AtomicU32 = AtomicU32::new(0);
 
 #[allow(deprecated)] // !!!DEVICE.NAME DEPRECATED!!!
 pub fn get_input_devices() -> Vec<String> {
@@ -62,6 +64,45 @@ fn make_resampler(source_rate: f64, chunk_size: usize) -> Async<f32> {
         FixedAsync::Input,
     )
     .expect("Failed to create rubato resampler")
+}
+
+pub fn start_preview(device_name: &str) -> Option<cpal::Stream> {
+    let host = cpal::default_host();
+    let device = host.input_devices().ok()?.into_iter()
+        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))?;
+
+    let config = device.default_input_config().ok()?;
+    
+    device.build_input_stream(
+        &config.into(),
+        |data: &[f32], _| {
+            let max = data.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+            update_peak(max);
+        },
+        |err| tracing::error!("Preview error: {err}"),
+        None
+    ).ok().and_then(|s| {
+        use cpal::traits::StreamTrait;
+        s.play().ok().map(|_| s)
+    })
+}
+
+pub fn get_ui_level() -> f32 {
+    PEAK_LEVEL.load(Ordering::Relaxed) as f32 / 1000.0
+}
+
+fn update_peak(raw_peak: f32) {
+    let normalized = raw_peak.sqrt().min(1.0);
+    
+    let current = PEAK_LEVEL.load(Ordering::Relaxed) as f32 / 1000.0;
+    
+    let display_level = if normalized > current {
+        normalized
+    } else {
+        current * 0.85
+    };
+
+    PEAK_LEVEL.store((display_level * 1000.0) as u32, Ordering::Relaxed);
 }
 
 fn create_audio_stream(
