@@ -2,7 +2,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use crate::types::AudioPacket;
-use tracing::{warn, info, trace};
+use tracing::{warn, info };
 use rubato::{
     Async,
     FixedAsync, 
@@ -15,53 +15,34 @@ use rubato::{
 use audioadapter_buffers::direct::InterleavedSlice;
 
 use crate::config::{
-    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES
+    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE
 };
 
 #[allow(deprecated)] // !!!DEVICE.NAME DEPRECATED!!!
-fn find_device(host: &cpal::Host) -> Option<cpal::Device> {
-    let devices: Vec<_> = host.input_devices().ok()?.collect();
-    
-    let get_desc_name = |d: &cpal::Device| -> String {
-        d.name().ok()
-            .or_else(|| {
-                None 
-            })
-            .unwrap_or_default()
-            .to_lowercase()
-    };
+pub fn get_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .into_iter()
+        .flatten()
+        .filter(|device| {
+            if device.default_input_config().is_err() {
+                return false;
+            }
 
-    for d in &devices {
-        if let Ok(name) = d.name() {
-            trace!("Available input device: {}", name);
-        }
-    }
-
-    let monitor = devices.iter().find(|d| {
-        let name = get_desc_name(d);
-        name.contains("monitor") || name.contains("loopback") || name.contains("stereo mix") || name.contains("wave out mix") 
-    });
-
-    if let Some(d) = monitor {
-        if let Ok(n) = d.name() { info!("Selected system monitor: {}", n); }
-        return Some(d.clone());
-    }
-
-    let sound_server = devices.iter().find(|d| {
-        let name = get_desc_name(d);
-        name.contains("pipewire") || name.contains("pulse")
-    });
-
-    if let Some(d) = sound_server {
-        if let Ok(n) = d.name() { info!("Selected sound server device: {}", n); }
-        return Some(d.clone());
-    }
-
-    host.default_input_device().inspect(|d| {
-        if let Ok(n) = d.name() {
-            info!("Falling back to default device: {}", n);
-        }
-    })
+            if let Ok(name) = device.name() {
+                let n = name.to_lowercase();
+                let is_trash = n.contains("null") 
+                    || n.contains("oss") 
+                    || n.contains("lavrate") 
+                    || n.contains("upmix")
+                    || n.contains("vdownmix");
+                
+                return !is_trash;
+            }
+            false
+        })
+        .filter_map(|d| d.name().ok())
+        .collect()
 }
 
 fn make_resampler(source_rate: f64, chunk_size: usize) -> Async<f32> {
@@ -176,11 +157,20 @@ fn create_audio_stream(
     Ok(stream)
 }
 
-pub fn start_listening(tx: mpsc::Sender<AudioPacket>) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
+#[allow(deprecated)] // !!!DEVICE.NAME DEPRECATED!!!
+pub fn start_listening(
+    device_name: &str,
+    tx: mpsc::Sender<AudioPacket>) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
     let host = cpal::default_host();
-    let device = find_device(&host).expect("No input device found");
-    if let Ok(desc) = device.description() {
-        info!("Using audio device: {:?}", desc.name());
+    let device = host.input_devices()
+        .into_iter()
+        .flatten()
+        .find(|d| d.name().ok().as_deref() == Some(device_name))
+        .or_else(|| host.default_input_device())
+        .expect("No input device found");
+
+    if let Ok(name) = device.name() {
+        info!("Using audio device: {}", name);
     }
 
     let stream = create_audio_stream(&device, tx)?;

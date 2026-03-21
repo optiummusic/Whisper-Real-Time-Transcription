@@ -18,7 +18,9 @@ use crate::utils::merge_strings;
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+        .unwrap_or_else(|_| {
+            EnvFilter::new("info,ort=warn,onnxruntime=warn")
+        });
  
     #[cfg(tokio_unstable)]
     {
@@ -45,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config::load_from_toml("config.toml");
     tracing::info!("Config loaded: {:?}", config::startup());
 
-    //whisper::disable_whisper_log();
+    whisper::disable_whisper_log();
 
     crate::utils::prepare_debug_dir();
     
@@ -57,7 +59,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (vad_ready_tx,   vad_ready_rx)   = oneshot::channel();
     let (pass1_ready_tx, pass1_ready_rx) = oneshot::channel();
     let (pass2_ready_tx, pass2_ready_rx) = oneshot::channel();
+    let (device_tx, device_rx) = oneshot::channel::<String>();
 
+    let audio_tx_clone = audio_tx.clone();
+    std::thread::Builder::new()
+        .name("audio-capture".to_string())
+        .spawn(move || {
+            let device_name = device_rx.blocking_recv().expect("UI closed without selecting device");
+            
+            let _stream = audio::start_listening(&device_name, audio_tx_clone)
+                .expect("Failed to start audio stream");
+            loop { std::thread::park(); }
+        })?;
     
     tokio::spawn(vad::vad_task(vad_ready_tx, audio_rx, pass1_tx, pass2_tx));
     vad_ready_rx.await.expect("vad failed to start");
@@ -92,8 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //tokio::spawn(display_task::display_task(event_rx)); ----Terminal display, as of now disabled
 
-    let _stream = audio::start_listening(audio_tx)?;
-
     if std::env::args().any(|arg| arg == "--bench") {
         tracing::info!("Benchmark mode: models loaded, exiting.");
         return Ok(()); 
@@ -111,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_options,
         Box::new(|_cc| {
             _cc.egui_ctx.set_zoom_factor(1.5);
-            Ok(Box::new(App::new(event_rx)))
+            Ok(Box::new(App::new(event_rx, device_tx)))
         }),
     ).map_err(|e| format!("eframe error: {}", e))?;
     
@@ -121,12 +132,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct App {
     event_rx: mpsc::Receiver<TranscriptEvent>,
     transcription: BTreeMap<u32, PhraseData>,
+
+    device_tx: Option<oneshot::Sender<String>>,
+    available_devices: Vec<String>,
+    selected_device: String,
+    is_running: bool,
 }
 impl App {
-    pub fn new(event_rx: mpsc::Receiver<TranscriptEvent>) -> Self {
+    pub fn new(event_rx: mpsc::Receiver<TranscriptEvent>, device_tx: oneshot::Sender<String>) -> Self {
+        let devices = audio::get_input_devices();
+        let saved_device = config::get_device();
+
+        let selected = if devices.contains(&saved_device) {
+            saved_device
+        } else {
+            devices.first().cloned().unwrap_or_default()
+        };
+
         Self {
             event_rx,
             transcription: BTreeMap::new(),
+            device_tx: Some(device_tx),
+            available_devices: devices,
+            selected_device: selected,
+            is_running: false,
         }
     }
 
@@ -168,10 +197,48 @@ impl App {
             ctx.request_repaint();
         }
     }
+    fn select_device(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(50.0);
+                ui.heading("Audio");
+                ui.add_space(20.0);
+
+                egui::ComboBox::from_label("Input device")
+                    .width(300.0)
+                    .selected_text(&self.selected_device)
+                    .show_ui(ui, |ui| {
+                        for dev in &self.available_devices {
+                            ui.selectable_value(&mut self.selected_device, dev.clone(), dev);
+                        }
+                    });
+
+                if ui.button("🔄").on_hover_text("Refresh devices").clicked() {
+                    self.refresh_devices();
+                }
+                ui.add_space(20.0);
+
+                if ui.button("Start transcription").clicked() {
+                    config::set_device(self.selected_device.clone());
+                    if let Some(tx) = self.device_tx.take() {
+                        let _ = tx.send(self.selected_device.clone());
+                    }
+                    self.is_running = true;
+                }
+            });
+        });
+    }
+    fn refresh_devices(&mut self) {
+        self.available_devices = audio::get_input_devices();
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.is_running { 
+            self.select_device(ctx);
+            return; 
+        }
         self.update_data(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -239,6 +306,7 @@ impl eframe::App for App {
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         config::save_to_toml("config.toml");
     }

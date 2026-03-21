@@ -253,12 +253,11 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
 }
 
 pub fn disable_whisper_log() {
-    return;
-    //unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
+    // unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 
 // unsafe extern "C" fn whisper_log_callback(
-//     _level: i32,
+//     _level: u32,
 //     _msg: *const std::os::raw::c_char,
 //     _user_data: *mut c_void,
 // ) {}
