@@ -113,6 +113,7 @@ fn create_audio_stream(
     let source_rate = config.sample_rate() as f64;
     let channels    = config.channels() as usize;
     let needs_resample = (source_rate - TARGET_SAMPLE_RATE as f64).abs() > 1.0;
+
  
     let resampler_input_size = if needs_resample {
         ((VAD_CHUNK_SIZE as f64 * source_rate / TARGET_SAMPLE_RATE as f64).ceil() as usize)
@@ -120,6 +121,9 @@ fn create_audio_stream(
     } else {
         VAD_CHUNK_SIZE
     };
+
+    info!("Audio stream config: rate={}, channels={}, resample={}", source_rate, channels, needs_resample);
+    info!("Resampler input size goal: {}", resampler_input_size);
  
     let mut resampler = if needs_resample {
         Some(make_resampler(source_rate, resampler_input_size))
@@ -165,6 +169,7 @@ fn create_audio_stream(
                         Ok((_, frames_out)) => {
                             let produced = frames_out;
                             accumulator.extend_from_slice(&output_buf[..produced]);
+                            tracing::trace!("Resampler produced {} frames", frames_out);
                         }
                         Err(e) => warn!("Resampler error: {}", e),
                     }
@@ -175,6 +180,7 @@ fn create_audio_stream(
  
             while accumulator.len() >= VAD_CHUNK_SIZE {
                 let chunk: Vec<f32> = accumulator.drain(..VAD_CHUNK_SIZE).collect();
+                tracing::trace!("Sending {} samples to VAD (accumulator left: {})", VAD_CHUNK_SIZE, accumulator.len());
                 match tx.try_send(chunk) {
                     Ok(()) => {
                         // trace!("Audio: chunk sent to VAD");
