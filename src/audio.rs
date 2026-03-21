@@ -169,7 +169,6 @@ fn create_audio_stream(
                         Ok((_, frames_out)) => {
                             let produced = frames_out;
                             accumulator.extend_from_slice(&output_buf[..produced]);
-                            tracing::trace!("Resampler produced {} frames", frames_out);
                         }
                         Err(e) => warn!("Resampler error: {}", e),
                     }
@@ -180,7 +179,6 @@ fn create_audio_stream(
  
             while accumulator.len() >= VAD_CHUNK_SIZE {
                 let chunk: Vec<f32> = accumulator.drain(..VAD_CHUNK_SIZE).collect();
-                tracing::trace!("Sending {} samples to VAD (accumulator left: {})", VAD_CHUNK_SIZE, accumulator.len());
                 match tx.try_send(chunk) {
                     Ok(()) => {
                         // trace!("Audio: chunk sent to VAD");

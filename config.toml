@@ -1,5 +1,5 @@
 language = "en"
-device = "sysdefault:CARD=Generic"
+device = "pipewire"
 use_gpu_fast = true
 use_gpu_acc = true
 speech_probability = 0.5
