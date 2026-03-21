@@ -68,8 +68,10 @@ impl VadEngine {
     }
 
     pub fn process(&mut self, audio_data: Vec<f32>, results: &mut Vec<PhraseChunk>) {
+        tracing::trace!("VAD process: received {} samples", audio_data.len());
         let audio = Arc::new(audio_data);
         let Some(prob) = self.run_vad(audio.as_ref()) else {
+            tracing::warn!("VAD run_vad returned None! Check audio buffer size: {}", audio.len());
             return;
         };
         self.push_preroll(Arc::clone(&audio));
@@ -80,9 +82,9 @@ impl VadEngine {
             }
             self.silence_chunks = 0;
         } else if self.is_speaking {
-            tracing::debug!("VAD: Speech detected (prob: {:.2})", prob);
             self.silence_chunks += 1;
         }
+        tracing::info!("VAD Probability: {:.4}", prob);
 
         if self.is_speaking && self.phrase_total < config::max_phrase_samples() {
             let active_id = self.stitch_id.unwrap_or(self.phrase_id);
@@ -129,6 +131,8 @@ impl VadEngine {
         if let (Ok(hn), Ok(cn)) = (outputs["hn"].try_extract_tensor::<f32>(), outputs["cn"].try_extract_tensor::<f32>()) {
             if let Some(s) = self.h.as_slice_mut() { s.copy_from_slice(hn.1); }
             if let Some(s) = self.c.as_slice_mut() { s.copy_from_slice(cn.1); }
+        } else {
+            tracing::error!("VAD: Failed to extract hidden states (hn/cn)!");
         }
 
         Some(prob)
