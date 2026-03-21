@@ -4,7 +4,7 @@ use std::sync::{ RwLock, OnceLock };
 use ort::device;
 
 pub const TARGET_SAMPLE_RATE:   u32   = 16_000;
-pub const VAD_CHUNK_SIZE:       usize = 480;
+pub const VAD_CHUNK_SIZE:       usize = 512;
 
 pub const STREAM_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
 pub const PASS1_MIN_SAMPLES:    usize = TARGET_SAMPLE_RATE as usize;
