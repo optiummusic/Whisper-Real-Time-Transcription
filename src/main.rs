@@ -65,10 +65,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::Builder::new()
         .name("audio-capture".to_string())
         .spawn(move || {
+            tracing::debug!("Audio thread: waiting for device signal...");
             let device_name = device_rx.blocking_recv().expect("UI closed without selecting device");
-            
+            tracing::debug!("Audio thread: attempting to open '{}'", device_name);
             let _stream = audio::start_listening(&device_name, audio_tx_clone)
                 .expect("Failed to start audio stream");
+
+            tracing::info!("Audio thread: Stream is now ACTIVE");
             loop { std::thread::park(); }
         })?;
     
@@ -232,7 +235,8 @@ impl App {
                 ui.add_space(20.0);
 
                 if ui.button("Start transcription").clicked() {
-                    self.preview_stream = None;
+                    self.preview_stream.take();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                     config::set_device(self.selected_device.clone());
                     if let Some(tx) = self.device_tx.take() {
                         let _ = tx.send(self.selected_device.clone());

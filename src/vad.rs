@@ -80,6 +80,7 @@ impl VadEngine {
             }
             self.silence_chunks = 0;
         } else if self.is_speaking {
+            tracing::debug!("VAD: Speech detected (prob: {:.2})", prob);
             self.silence_chunks += 1;
         }
 
