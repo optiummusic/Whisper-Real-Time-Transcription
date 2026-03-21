@@ -139,7 +139,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --no-default-features
+        shell: pwsh
+        run: |
+          # Флаги для Rust компилятора (AVX2, FMA)
+          $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
+          # Флаги для C++ части (whisper.cpp), которую собирает cmake/cc
+          $env:CFLAGS="/arch:AVX2"
+          $env:CXXFLAGS="/arch:AVX2"
+          
+          cargo build --release
 
       - uses: actions/upload-artifact@v4
         with:

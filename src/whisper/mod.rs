@@ -52,8 +52,17 @@ pub async fn pass1_task(
             dump_audio_to_file(&job.audio, &debug_filename);
             
             let (text, _) = run_whisper(&mut state, &job.audio, &WhisperConfig::fast());
-            
+            let elapsed = t0.elapsed();
             let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
+            tracing::info!(
+                target: "PERFORMANCE",
+                pid = job.phrase_id,
+                cid = job.chunk_id,
+                pass = 1,
+                ms = elapsed.as_millis(),
+                rtf = format!("{:.3}", rtf),
+                "Inference finished"
+            );
 
             if !text.is_empty() {
                 if res_tx.blocking_send(Pass1Result {
@@ -147,8 +156,15 @@ pub async fn pass2_task(
  
             let dur_ms = t0.elapsed().as_millis();
             let rtf    = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
-            info!(pid = job.phrase_id, dur_ms, duration_s, rtf,
-                  out_len = text.len(), "pass2 final inference");
+            tracing::info!(
+                target: "PERFORMANCE",
+                pid = job.phrase_id,
+                pass = 2,
+                ms = dur_ms,
+                rtf = format!("{:.3}", rtf),
+                text_len = text.len(),
+                "Inference finished"
+            );
  
             let event = TranscriptEvent::Final {
                 phrase_id:  job.phrase_id,
