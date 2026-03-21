@@ -108,6 +108,11 @@ impl VadEngine {
         if audio.len() != VAD_CHUNK_SIZE {
             return None;
         }
+
+        let max_val = audio.iter().map(|x| x.abs()).fold(0.0, f32::max);
+        if max_val > 1.1 {
+            tracing::warn!("VAD: Audio amplitude is too high ({:.2}). Check normalization!", max_val);
+        }
     
         let input_array = Array2::from_shape_vec((1, VAD_CHUNK_SIZE), audio.to_vec()).ok()?;
         let input_val = Value::from_array(input_array).ok()?;
