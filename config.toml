@@ -1,7 +1,7 @@
 language = "en"
 device = "pipewire"
-use_gpu_fast = false
-use_gpu_acc = false
+use_gpu_fast = true
+use_gpu_acc = true
 speech_probability = 0.5
 max_silence_chunks = 12
 dump_audio = false

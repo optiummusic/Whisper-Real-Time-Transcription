@@ -9,12 +9,13 @@ use thread_priority::*;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use translator::{
-    whisper, vad, audio, utils, config,
-    config::{ TARGET_SAMPLE_RATE },
-    types::{AudioPacket, PhraseChunk, TranscriptEvent},
-    PhraseData,
+    PhraseData, audio, config::{self, TARGET_SAMPLE_RATE}, 
+    types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationEvent}, 
+    utils::merge_strings, 
+    vad, 
+    whisper, 
+    translation::Translator
 };
-use crate::utils::merge_strings;
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
@@ -49,17 +50,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     whisper::disable_whisper_log();
 
-    crate::utils::prepare_debug_dir();
+    translator::utils::prepare_debug_dir();
     
     let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(64);
     let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(32);
     let (pass2_tx, pass2_rx) = mpsc::channel::<PhraseChunk>(32);
-    let (event_tx, event_rx) = mpsc::channel::<TranscriptEvent>(64);
+    let (event_tx, mut event_rx_main) = mpsc::channel::<TranscriptEvent>(64);
+    let (event_tx_ui, event_rx_ui) = mpsc::channel::<TranscriptEvent>(64);
+    let (event_tx_translator, event_rx_translator) = mpsc::channel::<TranscriptEvent>(64);
+    let (translation_tx, mut translation_rx) = mpsc::channel::<TranslationEvent>(64);
 
     let (vad_ready_tx,   vad_ready_rx)   = oneshot::channel();
     let (pass1_ready_tx, pass1_ready_rx) = oneshot::channel();
     let (pass2_ready_tx, pass2_ready_rx) = oneshot::channel();
     let (device_tx, device_rx) = oneshot::channel::<String>();
+
+    tokio::spawn(async move {
+        while let Some(evt) = event_rx_main.recv().await {
+            let _ = event_tx_ui.send(evt.clone()).await;
+            let _ = event_tx_translator.send(evt).await;
+        }
+    });
 
     let audio_tx_clone = audio_tx.clone();
     std::thread::Builder::new()
@@ -107,6 +118,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pass2_ready_rx.await.expect("pass2 failed to start");
 
     //tokio::spawn(display_task::display_task(event_rx)); ----Terminal display, as of now disabled
+    let translator = Translator::new(event_rx_translator, translation_tx);
+    tokio::spawn(translator.translate());
 
     if std::env::args().any(|arg| arg == "--bench") {
         tracing::info!("Benchmark mode: models loaded, exiting.");
@@ -125,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         native_options,
         Box::new(|_cc| {
             _cc.egui_ctx.set_zoom_factor(1.5);
-            Ok(Box::new(App::new(event_rx, device_tx)))
+            Ok(Box::new(App::new(event_rx_ui, device_tx)))
         }),
     ).map_err(|e| format!("eframe error: {}", e))?;
     

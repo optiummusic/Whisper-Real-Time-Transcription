@@ -5,7 +5,9 @@ pub mod vad;
 pub mod utils;
 pub mod whisper;
 pub mod config;
+pub mod translation;
 
+use crate::translation::translate::Translator;
 pub use crate::types::{PhraseChunk, TranscriptEvent, AudioPacket};
 use std::sync::Arc;
 use parking_lot::{Mutex, Condvar};
