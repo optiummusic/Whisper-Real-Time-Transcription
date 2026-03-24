@@ -1,13 +1,14 @@
 pub mod engine;
 
 use std::path::Path;
-use std::fs;
+use std::time::Duration;
+use std::{fs, thread};
 use std::sync::Arc;
 use std::collections::{ HashMap, VecDeque };
 use std::ffi::c_void;
 use std::sync::{Mutex, LazyLock};
 use tokio::sync::{ mpsc, oneshot };
-use tracing::{info, debug, warn};
+use tracing::{debug, error, info, trace, warn};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
@@ -27,12 +28,15 @@ pub async fn pass1_task(
 ) {
     let mut stream = StreamInfo::new();
 
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(1);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(3);
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
  
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_fast);
+
+        ctx_params.gpu_device(config::startup().gpu_device_fast);
+
 
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-fast", "bin")
         .expect("No Whisper model found in models/whisper-fast");
@@ -96,11 +100,12 @@ pub async fn pass1_task(
             }
             
             Some(res) = res_rx.recv() => {
+                let now = std::time::Instant::now();
                 let valid = stream.is_result_valid(res.phrase_id, res.short);
-                info!(pid = res.phrase_id, cid = res.chunk_id, valid, "pass1 result from whisper");
+                debug!(pid = res.phrase_id, cid = res.chunk_id, valid, "Pass1 got result from Whisper");
                 if !valid { continue; }
 
-                info!(pid = res.phrase_id, "pass1 sending to event_tx");
+                debug!(pid = res.phrase_id, "Pass1 sending to Transcript Event...");
 
                 let event = if res.short {
                     TranscriptEvent::Final {
@@ -108,18 +113,18 @@ pub async fn pass1_task(
                         text:       res.text,
                         duration_s: res.duration_s,
                         rtf:        res.rtf,
-                        sent_at: std::time::Instant::now(),
+                        sent_at: now,
                     }
                 } else {
                     TranscriptEvent::Partial {
                         phrase_id: res.phrase_id,
                         chunk_id:  res.chunk_id,
                         text:      res.text,
-                        sent_at: std::time::Instant::now(),
+                        sent_at: now,
                     }
                 };
                 let _ = event_tx.send(event).await;
-                info!(pid = res.phrase_id, "pass1 event_tx send complete");
+                debug!(pid = res.phrase_id, "Pass1 send complete to Transcript Event complete.");
             }
         }
     }
@@ -136,6 +141,10 @@ pub async fn pass2_task(
     std::thread::spawn(move || {
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(config::startup().use_gpu_acc);
+
+        ctx_params.gpu_device(config::startup().gpu_device_acc);
+
+
         let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
         .expect("No Whisper model found in models/whisper-accurate");
         let ctx = WhisperContext::new_with_params(
@@ -205,19 +214,32 @@ pub async fn pass2_task(
                     
                     let job = Pass2Job { phrase_id: chunk.phrase_id, audio, context: Arc::clone(&last_context), };
                     match job_tx.try_send(job) {
-                        Ok(_) => debug!(pid = chunk.phrase_id, "SUCCESS: Job sent to worker thread"),
+                        Ok(_) => debug!(pid = chunk.phrase_id, "SUCCESS: Pass2 Job sent to worker thread"),
                         Err(e) => warn!(pid = chunk.phrase_id, err = %e, "ERROR: Could not send job to Pass 2 worker!"),
                     }
                 } else { continue; }
             }
  
             Some(event) = res_rx.recv() => {
+                let pid = match &event {
+                    TranscriptEvent::Final { phrase_id, .. } => *phrase_id,
+                    TranscriptEvent::Partial { phrase_id, .. } => *phrase_id,
+                };
+
+                debug!(pid, "Pass2: received result from worker thread");
+
                 if let TranscriptEvent::Final { ref text, .. } = event {
+                    trace!(pid, text_len = text.len(), "Pass2: updating context with new final text");
                     let mut new_ctx = (*last_context).clone();
                     append_context(&mut new_ctx, text, 100);
                     last_context = Arc::new(new_ctx);
                 }
-                let _ = event_tx.send(event).await;
+
+                if let Err(e) = event_tx.send(event).await {
+                    error!(pid, err = %e, "Pass2: failed to send event to downstream");
+                } else {
+                    debug!(pid, "Pass2: event successfully dispatched to event_tx");
+                }
             }
         }
     }
@@ -269,14 +291,14 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
 }
 
 pub fn disable_whisper_log() {
-    // unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
+    unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 
-// unsafe extern "C" fn whisper_log_callback(
-//     _level: u32,
-//     _msg: *const std::os::raw::c_char,
-//     _user_data: *mut c_void,
-// ) {}
+unsafe extern "C" fn whisper_log_callback(
+    _level: u32,
+    _msg: *const std::os::raw::c_char,
+    _user_data: *mut c_void,
+) {}
 
 pub struct StreamInfo {
     current_id: Option<u32>,
@@ -356,7 +378,7 @@ impl StreamInfo {
         let chunk_id  = chunk.chunk_id;
 
         if chunk.is_last { self.buffer.clear(); }
-        info!("{} phrase, {} chunk is sent", phrase_id, chunk_id);
+        trace!("[MAKE JOB]{} phrase, {} chunk is sent", phrase_id, chunk_id);
         Some(Pass1Job { phrase_id, chunk_id, short: chunk.short, audio })
     }
 }

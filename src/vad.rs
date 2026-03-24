@@ -285,9 +285,25 @@ pub async fn vad_task(
     let mut results: Vec<PhraseChunk> = Vec::with_capacity(4);
     ready_tx.send(()).ok();
 
+    const MAX_METRICS: usize  = 100;
+    let mut metric_buffer: Vec<u128> = Vec::with_capacity(MAX_METRICS);
+
     while let Some(audio_data) = rx.recv().await {
         results.clear();
+
+        let t0: std::time::Instant = std::time::Instant::now();
         engine.process(audio_data, &mut results);
+        metric_buffer.push(t0.elapsed().as_millis());
+
+        if metric_buffer.len() >= MAX_METRICS {
+            let sum: u128 = metric_buffer.iter().sum();
+            let avg = sum as f32 / MAX_METRICS as f32;
+            
+            crate::utils::performance(avg, "vad_process_avg_100".to_string());
+            
+            metric_buffer.clear();
+        }
+
         for chunk in results.drain(..) {
             if chunk.is_last {
                 if pass1_tx.send(chunk.clone()).await.is_err() { break; }

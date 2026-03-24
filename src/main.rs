@@ -4,6 +4,7 @@ use tokio::sync:: { oneshot, mpsc };
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
 use thread_priority::*;
+use wgpu::{Instance, InstanceDescriptor, Backends, Adapter};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -52,9 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     translator::utils::prepare_debug_dir();
     
-    let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(64);
-    let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(32);
-    let (pass2_tx, pass2_rx) = mpsc::channel::<PhraseChunk>(32);
+    let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(128);
+    let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(128);
+    let (pass2_tx, pass2_rx) = mpsc::channel::<PhraseChunk>(128);
     let (event_tx, mut event_rx_main) = mpsc::channel::<TranscriptEvent>(64);
     let (event_tx_ui, event_rx_ui) = mpsc::channel::<TranscriptEvent>(64);
     let (event_tx_translator, event_rx_translator) = mpsc::channel::<TranscriptEvent>(64);
@@ -66,9 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (device_tx, device_rx) = oneshot::channel::<String>();
 
     tokio::spawn(async move {
-        while let Some(evt) = event_rx_main.recv().await {
-            let _ = event_tx_ui.send(evt.clone()).await;
-            let _ = event_tx_translator.send(evt).await;
+    while let Some(evt) = event_rx_main.recv().await {
+        let _ = event_tx_ui.try_send(evt.clone()); 
+        let tx_tr = event_tx_translator.clone();
+        tokio::spawn(async move {
+            let _ = tx_tr.send(evt).await;
+            });
         }
     });
 
@@ -92,9 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pass1_event_tx = event_tx.clone();
     std::thread::Builder::new()
         .name("whisper-pass1".to_string())
-        .spawn_with_priority(ThreadPriority::Min, move |result| {
-            if result.is_err() { tracing::warn!("Failed to set Min priority for Pass 1"); }
-            
+        .spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -106,8 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::Builder::new()
         .name("whisper-pass2".to_string())
-        .spawn_with_priority(ThreadPriority::Crossplatform(50u8.try_into().unwrap()), move |result| {
-            if result.is_err() { tracing::warn!("Failed to set priority for Pass 2"); }
+        .spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -118,6 +119,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pass2_ready_rx.await.expect("pass2 failed to start");
 
     //tokio::spawn(display_task::display_task(event_rx)); ----Terminal display, as of now disabled
+
+    
     let translator = Translator::new(event_rx_translator, translation_tx);
     tokio::spawn(translator.translate());
 
@@ -156,11 +159,48 @@ struct App {
 
     preview_stream: Option<cpal::Stream>,
     last_selected: String,
+
+    pending_config: config::StartupConfig,
+    available_languages: Vec<(&'static str, &'static str)>,
+    available_gpus: Vec<(i32, String)>,
 }
+
+fn get_available_gpus() -> Vec<(i32, String)> {
+    let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
+
+    let adapters: Vec<Adapter> = pollster::block_on(
+        instance.enumerate_adapters(Backends::all())
+    );
+
+    let mut gpus = Vec::new();
+
+    for (index, adapter) in adapters.into_iter().enumerate() {
+        let info = adapter.get_info();
+        
+        let device_type = match info.device_type {
+            wgpu::DeviceType::DiscreteGpu   => "(Discrete)",
+            wgpu::DeviceType::IntegratedGpu => "(Integrated)",
+            wgpu::DeviceType::Cpu           => "(Software/CPU)",
+            wgpu::DeviceType::VirtualGpu    => "(Virtual)",
+            _                               => "(Unknown)",
+        };
+
+        let display_name = format!("{} {}", info.name, device_type);
+        gpus.push((index as i32, display_name));
+    }
+
+    if gpus.is_empty() {
+        gpus.push((0, "Default Device (Auto-detect)".to_string()));
+    }
+
+    gpus
+}
+
 impl App {
     pub fn new(event_rx: mpsc::Receiver<TranscriptEvent>, device_tx: oneshot::Sender<String>) -> Self {
         let devices = audio::get_input_devices();
         let saved_device = config::get_device();
+        let cfg = config::startup();
 
         let selected = if devices.contains(&saved_device) {
             saved_device
@@ -178,6 +218,11 @@ impl App {
             selected_device: selected,
             is_running: false,
             preview_stream: preview,
+            pending_config: cfg.clone(),
+            available_languages: vec![
+                ("en", "English"), ("uk", "Ukrainian"), ("ru", "Russian"), ("auto", "Auto-detect")
+            ],
+            available_gpus: get_available_gpus(),
         }
     }
 
@@ -224,36 +269,120 @@ impl App {
             self.preview_stream = audio::start_preview(&self.selected_device);
             self.last_selected = self.selected_device.clone();
         }
-
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(50.0);
-                ui.heading("Audio");
+                ui.add_space(20.0);
+                ui.heading("Translator Setup");
                 ui.add_space(20.0);
 
-                egui::ComboBox::from_label("Input device")
-                    .width(300.0)
-                    .selected_text(&self.selected_device)
-                    .show_ui(ui, |ui| {
-                        for dev in &self.available_devices {
-                            ui.selectable_value(&mut self.selected_device, dev.clone(), dev);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Audio Input").strong());
+                    egui::ComboBox::from_label("Device")
+                        .width(300.0)
+                        .selected_text(&self.selected_device)
+                        .show_ui(ui, |ui| {
+                            for dev in &self.available_devices {
+                                ui.selectable_value(&mut self.selected_device, dev.clone(), dev);
+                            }
+                        });
+                    
+                    let level = audio::get_ui_level();
+                    ui.add(egui::ProgressBar::new(level).desired_width(300.0));
+                    ui.add_space(5.0);
+                    if ui.button("🔄").on_hover_text("Refresh devices").clicked() {
+                        self.refresh_devices();
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Model Engine Settings").strong());
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Target Language:");
+                        egui::ComboBox::from_id_salt("lang_select")
+                            .selected_text(self.pending_config.language.clone())
+                            .show_ui(ui, |ui| {
+                                for (code, name) in &self.available_languages {
+                                    ui.selectable_value(&mut self.pending_config.language, code.to_string(), *name);
+                                }
+                            });
+                    });
+
+                    ui.separator();
+
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Fast Model (Pass 1)").underline());
+                        ui.checkbox(&mut self.pending_config.use_gpu_fast, "Use GPU acceleration");
+                        
+                        if self.pending_config.use_gpu_fast {
+                            let selected_name = self.available_gpus.iter()
+                                .find(|(id, _)| *id == self.pending_config.gpu_device_fast)
+                                .map(|(_, name)| name.clone())
+                                .unwrap_or_else(|| "Select GPU...".to_string());
+
+                            egui::ComboBox::from_id_salt("gpu_fast_select")
+                                .width(ui.available_width() - 20.0)
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in &self.available_gpus {
+                                        ui.selectable_value(
+                                            &mut self.pending_config.gpu_device_fast, 
+                                            *id, 
+                                            name
+                                        );
+                                    }
+                                });
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        ui.label(egui::RichText::new("Accurate Model (Pass 2)").underline());
+                        ui.checkbox(&mut self.pending_config.use_gpu_acc, "Use GPU acceleration");
+                        
+                        if self.pending_config.use_gpu_acc {
+                            let selected_name = self.available_gpus.iter()
+                                .find(|(id, _)| *id == self.pending_config.gpu_device_acc)
+                                .map(|(_, name)| name.clone())
+                                .unwrap_or_else(|| "Select GPU...".to_string());
+
+                            egui::ComboBox::from_id_salt("gpu_acc_select")
+                                .width(ui.available_width() - 20.0)
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in &self.available_gpus {
+                                        ui.selectable_value(
+                                            &mut self.pending_config.gpu_device_acc, 
+                                            *id, 
+                                            name
+                                        );
+                                    }
+                                });
                         }
                     });
-                let level = audio::get_ui_level();
-                ui.add(egui::ProgressBar::new(level).desired_width(ui.available_width()));
+                });
 
-                if ui.button("🔄").on_hover_text("Refresh devices").clicked() {
-                    self.refresh_devices();
-                }
-                ui.add_space(20.0);
+                ui.add_space(30.0);
 
-                if ui.button("Start transcription").clicked() {
-                    self.preview_stream.take();
-                    std::thread::sleep(std::time::Duration::from_millis(200));
+                if ui.add(egui::Button::new(egui::RichText::new("START").heading())
+                    .min_size(egui::vec2(200.0, 50.0))).clicked() 
+                {
+                    config::init(
+                        self.pending_config.language.clone(),
+                        self.pending_config.use_gpu_fast,
+                        self.pending_config.use_gpu_acc,
+                        self.pending_config.gpu_device_fast,
+                        self.pending_config.gpu_device_acc,
+                    );
+
                     config::set_device(self.selected_device.clone());
                     if let Some(tx) = self.device_tx.take() {
                         let _ = tx.send(self.selected_device.clone());
                     }
+                    config::save_to_toml("config.toml");
                     self.is_running = true;
                 }
             });
@@ -295,45 +424,96 @@ impl eframe::App for App {
         });
         egui::SidePanel::right("settings").show(ctx, |ui| {
             ui.heading("Settings");
+            ui.add_space(8.0);
 
-            let mut prob = config::speech_probability();
-            if ui.add(egui::Slider::new(&mut prob, 0.1..=0.9)
-                .text("VAD sensitivity")).changed() {
-                config::set_speech_probability(prob);
-            }
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("VAD (Voice Activation Detection)").strong());
+                
+                let mut prob = config::speech_probability();
+                if ui.add(egui::Slider::new(&mut prob, 0.1..=0.9)
+                    .text("Sensitivity")).changed() {
+                    config::set_speech_probability(prob);
+                }
 
-            let mut dump = config::dump_audio();
-            if ui.checkbox(&mut dump, "Dump audio").changed() {
-                config::set_dump_audio(dump);
-            }
-            let mut min_w = config::min_window() as f32 / TARGET_SAMPLE_RATE as f32;
-            if ui.add(egui::Slider::new(&mut min_w, 1.0..=8.0)
-                .step_by(0.5)
-                .suffix("s")
-                .text("Min context window")).changed() {
-                config::set_min_window_secs(min_w);
-            }
+                let mut max_silence = config::max_silence_chunks();
+                if ui.add(egui::Slider::new(&mut max_silence, 1..=50)
+                    .text("Max Silence Chunks")).changed() {
+                    config::set_max_silence_chunks(max_silence);
+                }
 
-            let mut max_w = config::max_window() as f32 / TARGET_SAMPLE_RATE as f32;
-            if ui.add(egui::Slider::new(&mut max_w, 4.0..=20.0)
-                .step_by(0.5)
-                .suffix("s")
-                .text("Max context window")).changed() {
-                config::set_max_window_secs(max_w.max(min_w + 1.0)); // max всегда > min
-            }
-            let mut max_phrase = config::max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
-            if ui.add(egui::Slider::new(&mut max_phrase, 5.0..=30.0)
-                .step_by(0.5)
-                .suffix("s")
-                .text("Max phrase length")).changed() {
-                config::set_max_phrase_secs(max_phrase);
-            }
-            let mut min_phrase = config::min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
-            if ui.add(egui::Slider::new(&mut min_phrase, 0.1..=10.0)
-                .step_by(0.5)
-                .suffix("s")
-                .text("Min phrase length")).changed() {
-                config::set_min_phrase_secs(min_phrase);
+                let mut preroll = config::preroll_chunks();
+                if ui.add(egui::Slider::new(&mut preroll, 0..=20)
+                    .text("Preroll Chunks")).changed() {
+                    config::set_preroll_chunks(preroll);
+                }
+            });
+
+            ui.add_space(8.0);
+
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Engine & Context").strong());
+
+                let mut stitch_sil = config::stitch_max_silence();
+                if ui.add(egui::Slider::new(&mut stitch_sil, 0.1..=5.0)
+                    .step_by(0.1)
+                    .suffix("s")
+                    .text("Stitch Max Silence")).changed() {
+                    config::set_stitch_max_silence(stitch_sil);
+                }
+
+                let mut fast_track = config::fast_track_threshold_s();
+                if ui.add(egui::Slider::new(&mut fast_track, 0.5..=10.0)
+                    .step_by(0.1)
+                    .suffix("s")
+                    .text("Fast Track Threshold")).changed() {
+                    config::set_fast_track_threshold(fast_track);
+                }
+
+                let mut min_w = config::min_window() as f32 / TARGET_SAMPLE_RATE as f32;
+                if ui.add(egui::Slider::new(&mut min_w, 1.0..=8.0)
+                    .step_by(0.5)
+                    .suffix("s")
+                    .text("Min Context Window")).changed() {
+                    config::set_min_window_secs(min_w);
+                }
+
+                let mut max_w = config::max_window() as f32 / TARGET_SAMPLE_RATE as f32;
+                if ui.add(egui::Slider::new(&mut max_w, 4.0..=30.0)
+                    .step_by(0.5)
+                    .suffix("s")
+                    .text("Max Context Window")).changed() {
+                    config::set_max_window_secs(max_w);
+                }
+            });
+
+            ui.add_space(8.0);
+
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Phrase Limits").strong());
+
+                let mut min_phrase = config::min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
+                if ui.add(egui::Slider::new(&mut min_phrase, 0.1..=5.0)
+                    .step_by(0.1)
+                    .suffix("s")
+                    .text("Min Phrase Length")).changed() {
+                    config::set_min_phrase_secs(min_phrase);
+                }
+
+                let mut max_phrase = config::max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32;
+                if ui.add(egui::Slider::new(&mut max_phrase, 5.0..=60.0)
+                    .step_by(1.0)
+                    .suffix("s")
+                    .text("Max Phrase Length")).changed() {
+                    config::set_max_phrase_secs(max_phrase);
+                }
+            });
+
+            ui.add_space(8.0);
+
+            ui.checkbox(&mut config::dump_audio(), "Dump audio (WAV)").on_hover_text("Save what the model hears to debug_audio");
+            
+            if ui.button("Reset Transcription").clicked() {
+                self.transcription.clear();
             }
         });
     }

@@ -95,7 +95,7 @@ impl Translator {
         if let Some(ref val) = result {
             tracing::debug!("Lookup hit: '{}' -> '{}'", key, val);
         } else {
-            tracing::trace!("Lookup miss: '{}'", key);
+            //tracing::trace!("Lookup miss: '{}'", key);
         }
         
         result
@@ -119,42 +119,52 @@ impl Translator {
 
     async fn process_final_text(&self, phrase_id: u32, text: &str) {
         let words: Vec<&str> = text.split_whitespace().collect();
+        let max_ngram = 3;
         let mut i = 0;
+        let t0 = std::time::Instant::now();
 
         while i < words.len() {
-            let mut consumed = 1;
+            let mut consumed = 0;
             let mut translated_text = String::new();
 
-            if i + 1 < words.len() {
-                let w1 = Self::clean_word(words[i]);
-                let w2 = Self::clean_word(words[i+1]);
-                
-                if !w1.is_empty() && !w2.is_empty() {
-                    let bigram = format!("{} {}", w1, w2);
-                    if let Some(val) = self.lookup(&bigram) {
-                        tracing::info!(pid = phrase_id, "Bigram match found: '{}'", bigram);
-                        translated_text = val;
-                        consumed = 2; 
+            for window_size in (1..=max_ngram).rev() {
+                if i + window_size <= words.len() {
+                    
+                    let mut candidate_words = Vec::with_capacity(window_size);
+                    for j in 0..window_size {
+                        let cleaned = Self::clean_word(words[i + j]);
+                        if cleaned.is_empty() {
+                            break;
+                        }
+                        candidate_words.push(cleaned);
+                    }
+
+                    if candidate_words.len() == window_size {
+                        let candidate_phrase = candidate_words.join(" ");
+                        
+                        if let Some(val) = self.lookup(&candidate_phrase) {
+                            tracing::info!(pid = phrase_id, "Match found for {}-gram: '{}'", window_size, candidate_phrase);
+                            translated_text = val;
+                            consumed = window_size;
+                            break;
+                        }
                     }
                 }
             }
 
-            if consumed == 1 {
+            if consumed == 0 {
+                consumed = 1;
                 let w = Self::clean_word(words[i]);
                 if !w.is_empty() {
-                    if let Some(val) = self.lookup(&w) {
-                        translated_text = val;
-                    } else {
-                        translated_text = words[i].to_uppercase();
-                        tracing::trace!(pid = phrase_id, "No rule for '{}', using fallback", w);
-                    }
+                    translated_text = words[i].to_uppercase(); 
+                    //tracing::trace!(pid = phrase_id, "No rule for '{}', using fallback", w);
                 } else {
-                    translated_text = words[i].to_string();
+                    translated_text = words[i].to_string(); 
                 }
             }
 
-            if consumed == 2 || Self::is_valid_word(&translated_text) {
-                tracing::info!(pid = phrase_id, "Sending translation: '{}'", translated_text);
+            if consumed > 1 || Self::is_valid_word(&translated_text) {
+                //tracing::trace!(pid = phrase_id, "Sending translation: '{}'", translated_text);
                 
                 let translated_evt = TranslationEvent::Translate {
                     phrase_id,
@@ -163,11 +173,12 @@ impl Translator {
                 
                 let _ = self.send.send(translated_evt).await;
             } else {
-                tracing::debug!(pid = phrase_id, "Word '{}' filtered out (too short or non-alphabetic)", translated_text);
+                //tracing::debug!(pid = phrase_id, "Word '{}' filtered out", translated_text);
             }
-
             i += consumed;
         }
+        let elapsed_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        crate::utils::performance(elapsed_ms, format!("translate_phrase_{}", phrase_id));
     }
 
     fn clean_word(word: &str) -> String {

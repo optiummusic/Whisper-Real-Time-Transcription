@@ -146,12 +146,3 @@ jobs:
   #         # Флаги для C++ части (whisper.cpp), которую собирает cmake/cc
   #         $env:CFLAGS="/arch:AVX2"
   #         $env:CXXFLAGS="/arch:AVX2"
-          
-          cargo build --release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: whisper-rt-windows-cpu
-          path: |
-            target/release/translator.exe
-            target/release/*.dll

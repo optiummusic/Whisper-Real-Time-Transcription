@@ -141,6 +141,8 @@ fn create_audio_stream(
         active_channels_mask: None,
         partial_len: None,
     };
+
+    let mut sample_metrics = Vec::with_capacity(100);
  
     let stream = device.build_input_stream(
         &config.into(),
@@ -154,6 +156,7 @@ fn create_audio_stream(
 
                 while raw_buf.len() >= resampler_input_size {
                     let block: Vec<f32> = raw_buf.drain(..resampler_input_size).collect();
+                    let t0 = std::time::Instant::now();
 
                     let input_frames = block.len();
 
@@ -172,6 +175,12 @@ fn create_audio_stream(
                         }
                         Err(e) => warn!("Resampler error: {}", e),
                     }
+                    sample_metrics.push(t0.elapsed().as_micros());
+                    if sample_metrics.len() >= 100 {
+                        let avg = (sample_metrics.iter().sum::<u128>() as f32 / 100.0) / 1000.0; // в мс
+                        crate::utils::performance(avg, "audio_resample_avg_100".to_string());
+                        sample_metrics.clear();
+                    }
                 }
             } else {
                 accumulator.extend(mono_iter);
@@ -179,9 +188,13 @@ fn create_audio_stream(
  
             while accumulator.len() >= VAD_CHUNK_SIZE {
                 let chunk: Vec<f32> = accumulator.drain(..VAD_CHUNK_SIZE).collect();
+                let t_send = std::time::Instant::now();
                 match tx.try_send(chunk) {
                     Ok(()) => {
-                        // trace!("Audio: chunk sent to VAD");
+                        let dur = t_send.elapsed().as_micros();
+                        if dur > 1000 {
+                            crate::utils::performance(dur as f32 / 1000.0, "audio_tx_slowdown_warn".to_string());
+                        }
                     }
                     Err(e) => match e {
                         TrySendError::Full(_) => {

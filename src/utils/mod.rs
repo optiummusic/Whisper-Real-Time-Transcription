@@ -75,3 +75,12 @@ pub fn prepare_debug_dir() {
     
     let _ = fs::create_dir_all(dir);
 }
+
+pub fn performance(elapsed: f32, func_name: String) {
+    tracing::info!(
+        target: "PERFORMANCE",
+        ms = elapsed,
+        name = func_name,
+        "Block finished"
+    );
+}

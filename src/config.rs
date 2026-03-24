@@ -50,31 +50,40 @@ pub fn set_max_phrase_secs(v: f32)        { MAX_PHRASE_SEC_X10.store((v * 10.0) 
 pub fn set_min_phrase_secs(v: f32)        { MIN_PHRASE_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
 pub fn set_device(name: String)           { let mut lock = device_storage().write().unwrap(); *lock = name; }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StartupConfig {
-    pub language:     String,
-    pub use_gpu_fast: bool,
-    pub use_gpu_acc:  bool,
+    pub language:        String,
+    pub use_gpu_fast:    bool,
+    pub use_gpu_acc:     bool,
+    pub gpu_device_fast: i32,
+    pub gpu_device_acc:  i32,
 }
 
-static STARTUP: OnceLock<StartupConfig> = OnceLock::new();
-static DEFAULT_CONFIG: StartupConfig = StartupConfig {
-    language: String::new(), // String нельзя в константах, поэтому используем небольшую хитрость ниже
-    use_gpu_fast: true,
-    use_gpu_acc: true,
-};
-pub fn startup() -> &'static StartupConfig {
-    // Вместо создания временного объекта, используем get_or_init
-    STARTUP.get_or_init(|| StartupConfig {
+static STARTUP_DATA: OnceLock<RwLock<StartupConfig>> = OnceLock::new();
+
+fn startup_storage() -> &'static RwLock<StartupConfig> {
+    STARTUP_DATA.get_or_init(|| RwLock::new(StartupConfig {
         language: "en".to_string(),
         use_gpu_fast: true,
         use_gpu_acc: true,
-    })
+        gpu_device_fast: 0,
+        gpu_device_acc: 0,
+    }))
 }
 
-pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool) {
-    STARTUP.set(StartupConfig { language, use_gpu_fast, use_gpu_acc })
-        .expect("init() called twice");
+pub fn startup() -> StartupConfig {
+    startup_storage().read().unwrap().clone()
+}
+
+pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool, gpu_fast: i32, gpu_acc: i32) {
+    let mut lock = startup_storage().write().unwrap();
+    *lock = StartupConfig { 
+        language, 
+        use_gpu_fast, 
+        use_gpu_acc, 
+        gpu_device_fast: gpu_fast, 
+        gpu_device_acc: gpu_acc 
+    };
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -94,6 +103,8 @@ pub struct TomlConfig {
     pub max_window_secs:      Option<f32>,
     pub min_phrase_secs:      Option<f32>,
     pub max_phrase_secs:      Option<f32>, 
+    pub gpu_device_fast:      Option<i32>,
+    pub gpu_device_acc:       Option<i32>,
 }
  
 pub fn load_from_toml(path: &str) {
@@ -107,7 +118,6 @@ pub fn load_from_toml(path: &str) {
             }
         })
         .unwrap_or_default();
-    let content = std::fs::read_to_string(path).unwrap_or_default();
  
     if let Some(v) = cfg.speech_probability   { set_speech_probability(v); }
     if let Some(v) = cfg.max_silence_chunks   { set_max_silence_chunks(v); }
@@ -128,25 +138,28 @@ pub fn load_from_toml(path: &str) {
         cfg.language.unwrap_or_else(|| "en".to_string()),
         cfg.use_gpu_fast.unwrap_or(true),
         cfg.use_gpu_acc.unwrap_or(true),
+        cfg.gpu_device_fast.unwrap_or(0),
+        cfg.gpu_device_acc.unwrap_or(0),
     );
 }
  
 pub fn save_to_toml(path: &str) {
+    let current = startup(); 
     let cfg = TomlConfig {
-        language:             Some(startup().language.clone()),
+        language:             Some(current.language),
         device:               Some(get_device()),
-        use_gpu_fast:         Some(startup().use_gpu_fast),
-        use_gpu_acc:          Some(startup().use_gpu_acc),
+        use_gpu_fast:         Some(current.use_gpu_fast),
+        use_gpu_acc:          Some(current.use_gpu_acc),
+        gpu_device_fast:      Some(current.gpu_device_fast),
+        gpu_device_acc:       Some(current.gpu_device_acc),
         speech_probability:   Some(speech_probability()),
         max_silence_chunks:   Some(max_silence_chunks()),
-        stitch_max_silence:   None, // внутренний параметр, не показываем в UI
-        fast_track_threshold: None,
-        preroll_chunks:       None,
         dump_audio:           Some(dump_audio()),
         min_window_secs:      Some(min_window() as f32 / TARGET_SAMPLE_RATE as f32),
         max_window_secs:      Some(max_window() as f32 / TARGET_SAMPLE_RATE as f32),
         min_phrase_secs:      Some(min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
         max_phrase_secs:      Some(max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
+        ..Default::default()
     };
     match toml::to_string_pretty(&cfg) {
         Ok(content) => { let _ = std::fs::write(path, content); }

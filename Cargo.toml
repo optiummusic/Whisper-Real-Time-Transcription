@@ -22,6 +22,8 @@ thread-priority = "3.0.0"
 core_affinity = "0.8.3"
 rubato = "1.0.1"
 audioadapter-buffers = "2.0.0"
+wgpu = "29.0.0"
+pollster = "0.4.0"
 
 [features]
 default = ["vulkan"]
