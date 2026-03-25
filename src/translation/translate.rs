@@ -79,12 +79,19 @@ impl Translator {
             DictFile::default()
         });
 
-        let rules_count = dict.rules.len();
-        let processed = dict.rules.into_iter()
-            .map(|(k, v)| (k.to_lowercase(), v))
-            .collect();
+        let mut processed = HashMap::with_capacity(dict.rules.len() * 2);
+        
+        for (k, v) in dict.rules {
+            let key = k.to_lowercase();
+            let val = v.to_lowercase();
             
-        tracing::info!("Dictionary loaded. Rules count: {}", rules_count);
+            processed.insert(key.clone(), v.clone());
+            if !processed.contains_key(&val) {
+                processed.insert(val, k); 
+            }
+        }
+            
+        tracing::info!("Dictionary loaded. Unique bidirectional rules: {}", processed.len());
         processed
     }
 

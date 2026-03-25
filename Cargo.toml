@@ -24,6 +24,7 @@ rubato = "1.0.1"
 audioadapter-buffers = "2.0.0"
 wgpu = "29.0.0"
 pollster = "0.4.0"
+chrono = { version = "0.4.44", features = ["std", "clock", "serde"] }
 
 [features]
 default = ["vulkan"]

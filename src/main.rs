@@ -7,12 +7,20 @@ use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
 use thread_priority::*;
 use wgpu::{Instance, InstanceDescriptor, Backends, Adapter, DeviceType};
+use std::sync::atomic::AtomicBool;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 use translator::{
-    PhraseData, audio, config::{self, TARGET_SAMPLE_RATE}, translation::Translator, types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationBuffer, TranslationEvent}, utils::merge_strings, vad, whisper
+    PhraseData, 
+    audio, 
+    config::{self, TARGET_SAMPLE_RATE}, 
+    translation::Translator, 
+    types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationBuffer, TranslationEvent}, 
+    utils::{ merge_strings, init_audio_dumper }, 
+    vad, 
+    whisper
 };
 
 fn init_logging() {
@@ -47,8 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Config loaded: {:?}", config::startup());
 
     whisper::disable_whisper_log();
-
-    translator::utils::prepare_debug_dir();
+    init_audio_dumper();
     
     let (audio_tx, audio_rx) = mpsc::channel::<AudioPacket>(128);
     let (pass1_tx, pass1_rx) = mpsc::channel::<PhraseChunk>(128);
@@ -171,6 +178,10 @@ struct App {
     pending_config:     config::StartupConfig,
     available_languages: Vec<(&'static str, &'static str)>,
     available_gpus:     Vec<(i32, String)>,
+
+    save_transcription: Arc<AtomicBool>,
+    transcript_path: String,
+    save_tx: Option<mpsc::Sender<String>>,
 }
 
 fn get_available_gpus() -> Vec<(i32, String)> {
@@ -240,6 +251,7 @@ impl App {
         let selected = if devices.contains(&saved_device) { saved_device }
                        else { devices.first().cloned().unwrap_or_default() };
         let preview = audio::start_preview(&selected);
+        let save_flag = Arc::new(AtomicBool::new(false));
 
         Self {
             event_rx,
@@ -260,6 +272,9 @@ impl App {
                 ("en", "English"), ("uk", "Ukrainian"), ("ru", "Russian"), ("auto", "Auto-detect"),
             ],
             available_gpus: get_available_gpus(),
+            save_transcription: save_flag,
+            save_tx: None,
+            transcript_path: format!("transcriptions/{}.txt", chrono::Local::now().format("%Y_%m_%d_%H_%M")),
         }
     }
 
@@ -289,11 +304,14 @@ impl App {
                 }
                 TranscriptEvent::Final { phrase_id, text, duration_s, rtf, .. } => {
                     self.transcription.insert(phrase_id, PhraseData {
-                        text,
+                        text: text.clone(),
                         is_final: true,
                         duration_s,
                         rtf,
                     });
+                    if let Some(tx) = &self.save_tx {
+                        let _ = tx.try_send(text.clone());
+                    }
                 }
             }
         }
@@ -418,6 +436,12 @@ impl App {
                 if ui.add(egui::Button::new(egui::RichText::new("START").heading())
                     .min_size(egui::vec2(200.0, 50.0))).clicked() 
                 {
+                    self.preview_stream = None;
+                    let (tx, rx) = mpsc::channel(100);
+                    self.save_tx = Some(tx);
+                    let should_save = Arc::clone(&self.save_transcription);
+                    let path = self.transcript_path.clone();
+                    self.handle.spawn(translator::utils::recording_task(rx, path, should_save));
                     config::init(
                         self.pending_config.language.clone(),
                         self.pending_config.use_gpu_fast,
@@ -425,12 +449,11 @@ impl App {
                         self.pending_config.gpu_device_fast,
                         self.pending_config.gpu_device_acc,
                     );
-
                     config::set_device(self.selected_device.clone());
+                    config::save_to_toml("config.toml");
                     if let Some(tx) = self.device_tx.take() {
                         let _ = tx.send(self.selected_device.clone());
                     }
-                    config::save_to_toml("config.toml");
                     self.is_running = true;
                 }
             });
@@ -479,7 +502,6 @@ impl eframe::App for App {
                             });
                         }
 
-                        // Рисуем переводы под словами
                         if let Some(trans) = self.translations.get(id) {
                             if !trans.is_empty() && !word_rects.is_empty() {
                                 let y = word_rects[0].max.y + 2.0;
@@ -606,6 +628,11 @@ impl eframe::App for App {
             let mut dump = config::dump_audio();
             if ui.checkbox(&mut dump, "Dump audio").changed() {
                 config::set_dump_audio(dump);
+            }
+
+            let mut check_val = self.save_transcription.load(std::sync::atomic::Ordering::Relaxed);
+            if ui.checkbox(&mut check_val, "Save transcription to disk").changed() {
+                self.save_transcription.store(check_val, std::sync::atomic::Ordering::Relaxed);
             }
             
             if ui.button("Reset Transcription").clicked() {

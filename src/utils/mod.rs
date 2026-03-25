@@ -1,6 +1,10 @@
+use std::collections::VecDeque;
 use std::path::{ Path, PathBuf };
 use std::fs;
+use std::sync::OnceLock;
 use crate::config;
+use tokio::sync::{ mpsc, oneshot };
+use tokio::io::AsyncWriteExt;
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
     if text.is_empty() { return; }
@@ -83,4 +87,84 @@ pub fn performance(elapsed: f32, func_name: String) {
         name = func_name,
         "Block finished"
     );
+}
+
+struct DumpRequest {
+    samples: Vec<f32>,
+    filename: String,
+}
+static DUMP_TX: OnceLock<mpsc::UnboundedSender<DumpRequest>> = OnceLock::new();
+pub fn init_audio_dumper() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<DumpRequest>();
+    let _ = DUMP_TX.set(tx);
+
+    tokio::spawn(async move {
+        let dir = "debug_audio";
+        let _ = fs::create_dir_all(dir);
+        let mut history: VecDeque<String> = VecDeque::new();
+        const MAX_DUMP_FILES: usize = 20;
+
+        tracing::info!("Audio dumper task started");
+
+        while let Some(req) = rx.recv().await {
+            let file_path = Path::new(dir).join(&req.filename);
+            let file_path_str = file_path.to_string_lossy().into_owned();
+
+            history.retain(|x| x != &file_path_str);
+            if history.len() >= MAX_DUMP_FILES {
+                if let Some(old_file) = history.pop_front() {
+                    let _ = fs::remove_file(old_file);
+                }
+            }
+            history.push_back(file_path_str.clone());
+
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(mut writer) = hound::WavWriter::create(file_path, spec) {
+                    for &sample in &req.samples {
+                        let _ = writer.write_sample(sample);
+                    }
+                    let _ = writer.finalize();
+                }
+            }).await;
+        }
+    });
+}
+
+pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
+    if !config::dump_audio() { return; }
+    
+    if let Some(tx) = DUMP_TX.get() {
+        let _ = tx.send(DumpRequest {
+            samples: samples.to_vec(),
+            filename: filename.to_string(),
+        });
+    }
+}
+
+pub async fn recording_task(
+    mut rx: mpsc::Receiver<String>, 
+    path: String, 
+    should_save: std::sync::Arc<std::sync::atomic::AtomicBool>
+) {
+    let _ = tokio::fs::create_dir_all("transcriptions").await;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true).append(true).open(&path).await
+        .expect("Failed to open transcription file");
+
+    let mut count = 0;
+    while let Some(text) = rx.recv().await {
+        if should_save.load(std::sync::atomic::Ordering::Relaxed) {
+            count += 1;
+            let suffix = if count % 5 == 0 { ".\n" } else { " " };
+            let _ = file.write_all(format!("{}{}", text, suffix).as_bytes()).await;
+            let _ = file.flush().await; 
+        }
+    }
 }
