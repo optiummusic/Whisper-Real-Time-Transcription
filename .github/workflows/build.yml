@@ -143,3 +143,10 @@ jobs:
           $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
           $env:CFLAGS="/arch:AVX2"
           $env:CXXFLAGS="/arch:AVX2"
+
+      - uses: actions/upload-artifact@v4
+        with:         
+          name: whisper-rt-windows-cuda
+          path: |           
+            target/release/translator.exe           
+            target/release/*.dll
