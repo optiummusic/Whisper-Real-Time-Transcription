@@ -291,6 +291,7 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
 }
 
 pub fn disable_whisper_log() {
+    return;
     unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 

@@ -123,26 +123,24 @@ jobs:
   #           target/release/translator.exe
   #           target/release/*.dll
 
-  # ── Windows: CPU (всегда работает) ──────────────────────────────
-  # build-windows-cpu:
-  #   name: Windows (CPU)
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
+  ── Windows: CPU (всегда работает) ──────────────────────────────
+  build-windows-cpu:
+    name: Windows (CPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - name: Install dependencies
-  #       run: |
-  #         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-  #         choco install llvm -y
+      - name: Install dependencies
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install llvm -y
 
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-  #     - name: Build
-  #       shell: pwsh
-  #       run: |
-  #         # Флаги для Rust компилятора (AVX2, FMA)
-  #         $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
-  #         # Флаги для C++ части (whisper.cpp), которую собирает cmake/cc
-  #         $env:CFLAGS="/arch:AVX2"
-  #         $env:CXXFLAGS="/arch:AVX2"
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
+          $env:CFLAGS="/arch:AVX2"
+          $env:CXXFLAGS="/arch:AVX2"

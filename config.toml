@@ -10,4 +10,4 @@ max_window_secs = 10.0
 min_phrase_secs = 1.6
 max_phrase_secs = 12.0
 gpu_device_fast = 1
-gpu_device_acc = 1
+gpu_device_acc = 0

@@ -4,7 +4,7 @@ use tokio::sync:: { oneshot, mpsc };
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
 use thread_priority::*;
-use wgpu::{Instance, InstanceDescriptor, Backends, Adapter};
+use wgpu::{Instance, InstanceDescriptor, Backends, Adapter, DeviceType};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -167,25 +167,47 @@ struct App {
 
 fn get_available_gpus() -> Vec<(i32, String)> {
     let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
-
     let adapters: Vec<Adapter> = pollster::block_on(
-        instance.enumerate_adapters(Backends::all())
+        instance.enumerate_adapters(Backends::VULKAN)
     );
 
-    let mut gpus = Vec::new();
+    let mut temp_gpus = Vec::new();
+    let mut seen_pci_ids = std::collections::HashSet::new();
 
-    for (index, adapter) in adapters.into_iter().enumerate() {
+    for adapter in adapters {
         let info = adapter.get_info();
         
-        let device_type = match info.device_type {
-            wgpu::DeviceType::DiscreteGpu   => "(Discrete)",
-            wgpu::DeviceType::IntegratedGpu => "(Integrated)",
-            wgpu::DeviceType::Cpu           => "(Software/CPU)",
-            wgpu::DeviceType::VirtualGpu    => "(Virtual)",
-            _                               => "(Unknown)",
+        if info.device_type == DeviceType::Cpu {
+            continue;
+        }
+
+        let pci_id = (info.vendor, info.device);
+        if !seen_pci_ids.insert(pci_id) {
+            continue;
+        }
+        
+        let device_type_str = match info.device_type {
+            DeviceType::DiscreteGpu   => "(Discrete)",
+            DeviceType::IntegratedGpu => "(Integrated)",
+            DeviceType::VirtualGpu    => "(Virtual)",
+            _                         => "(Unknown)",
         };
 
-        let display_name = format!("{} {}", info.name, device_type);
+        let display_name = format!("{} {}", info.name, device_type_str);
+        temp_gpus.push((info.device_type, display_name, info.device_pci_bus_id));
+    }
+
+    temp_gpus.sort_by(|a, b| {
+        match (a.0, b.0) {
+            (DeviceType::IntegratedGpu, DeviceType::DiscreteGpu) => std::cmp::Ordering::Less,
+            (DeviceType::DiscreteGpu, DeviceType::IntegratedGpu) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+
+    let mut gpus = Vec::new();
+    for (index, (_, display_name, bus_id)) in temp_gpus.into_iter().enumerate() {
+        tracing::info!("Validated GPU: index={}, name={}, id={}", index, display_name, bus_id);
         gpus.push((index as i32, display_name));
     }
 
@@ -510,7 +532,10 @@ impl eframe::App for App {
 
             ui.add_space(8.0);
 
-            ui.checkbox(&mut config::dump_audio(), "Dump audio (WAV)").on_hover_text("Save what the model hears to debug_audio");
+            let mut dump = config::dump_audio();
+            if ui.checkbox(&mut dump, "Dump audio").changed() {
+                config::set_dump_audio(dump);
+            }
             
             if ui.button("Reset Transcription").clicked() {
                 self.transcription.clear();
