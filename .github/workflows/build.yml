@@ -123,7 +123,6 @@ jobs:
   #           target/release/translator.exe
   #           target/release/*.dll
 
-  ── Windows: CPU (всегда работает) ──────────────────────────────
   build-windows-cpu:
     name: Windows (CPU)
     runs-on: windows-latest
