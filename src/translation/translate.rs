@@ -5,7 +5,7 @@ use crate::utils::get_model_path;
 use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use crate::types::{TranscriptEvent, TranslationEvent};
+use crate::types::{TranscriptEvent, TranslationEvent, TranslationBuffer};
 
 #[derive(Deserialize, Default)]
 struct DictFile {
@@ -101,13 +101,13 @@ impl Translator {
         result
     }
 
-    pub async fn translate(mut self) {
+    pub async fn translate(mut self, buffer: Arc<TranslationBuffer>) {
         tracing::info!("Translator loop started");
         while let Some(evt) = self.event.recv().await {
             match evt {
                 TranscriptEvent::Final { phrase_id, text, .. } => {
                     tracing::debug!(pid = phrase_id, "Processing final transcript: '{}'", text);
-                    self.process_final_text(phrase_id, &text).await;
+                    self.process_final_text(phrase_id, &text, Arc::clone(&buffer)).await;
                 }
                 TranscriptEvent::Partial { .. } => {
                     continue;
@@ -117,12 +117,14 @@ impl Translator {
         tracing::warn!("Translator loop finished");
     }
 
-    async fn process_final_text(&self, phrase_id: u32, text: &str) {
+    async fn process_final_text(&self, phrase_id: u32, text: &str, buffer: Arc<TranslationBuffer>) {
         let words: Vec<&str> = text.split_whitespace().collect();
         let max_ngram = 3;
         let mut i = 0;
         let t0 = std::time::Instant::now();
-
+        let ui_notify = buffer.register(phrase_id).await;
+        let mut translated: Vec<TranslationEvent> = Vec::new();
+  
         while i < words.len() {
             let mut consumed = 0;
             let mut translated_text = String::new();
@@ -166,17 +168,22 @@ impl Translator {
             if consumed > 1 || Self::is_valid_word(&translated_text) {
                 //tracing::trace!(pid = phrase_id, "Sending translation: '{}'", translated_text);
                 
-                let translated_evt = TranslationEvent::Translate {
+                translated.push(TranslationEvent::Translate {
                     phrase_id,
-                    text: translated_text.clone(),
-                };
-                
-                let _ = self.send.send(translated_evt).await;
+                    word_index: i,
+                    span: consumed,
+                    text: translated_text,
+                    });
             } else {
                 //tracing::debug!(pid = phrase_id, "Word '{}' filtered out", translated_text);
             }
             i += consumed;
         }
+        ui_notify.notified().await;
+        for evt in translated {
+            let _ = self.send.send(evt).await;
+        }
+
         let elapsed_ms = t0.elapsed().as_secs_f32() * 1000.0;
         crate::utils::performance(elapsed_ms, format!("translate_phrase_{}", phrase_id));
     }

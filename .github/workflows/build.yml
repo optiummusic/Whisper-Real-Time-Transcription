@@ -133,21 +133,22 @@ jobs:
         run: |
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
           choco install llvm -y
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
         shell: pwsh
         run: |
+          # Флаги для Rust компилятора (AVX2, FMA)
           $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
+          # Флаги для C++ части (whisper.cpp), которую собирает cmake/cc
           $env:CFLAGS="/arch:AVX2"
           $env:CXXFLAGS="/arch:AVX2"
+          
           cargo build --release --no-default-features
-
       - uses: actions/upload-artifact@v4
-        with:         
-          name: whisper-rt-windows-cuda
-          path: |           
-            target/release/translator.exe           
+        with:
+          name: whisper-rt-windows-cpu
+          path: |
+            target/release/translator.exe
             target/release/*.dll

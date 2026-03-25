@@ -1,6 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+use std::collections::{HashMap, HashSet};
+
 use eframe::egui;
-use tokio::sync:: { oneshot, mpsc };
+use tokio::{runtime::Handle, sync:: { mpsc, oneshot }};
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
 use thread_priority::*;
@@ -10,12 +12,7 @@ use wgpu::{Instance, InstanceDescriptor, Backends, Adapter, DeviceType};
 static GLOBAL: MiMalloc = MiMalloc;
 
 use translator::{
-    PhraseData, audio, config::{self, TARGET_SAMPLE_RATE}, 
-    types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationEvent}, 
-    utils::merge_strings, 
-    vad, 
-    whisper, 
-    translation::Translator
+    PhraseData, audio, config::{self, TARGET_SAMPLE_RATE}, translation::Translator, types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationBuffer, TranslationEvent}, utils::merge_strings, vad, whisper
 };
 
 fn init_logging() {
@@ -60,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx_ui, event_rx_ui) = mpsc::channel::<TranscriptEvent>(64);
     let (event_tx_translator, event_rx_translator) = mpsc::channel::<TranscriptEvent>(64);
     let (translation_tx, mut translation_rx) = mpsc::channel::<TranslationEvent>(64);
+    let translation_buffer = translator::types::TranslationBuffer::new();
 
     let (vad_ready_tx,   vad_ready_rx)   = oneshot::channel();
     let (pass1_ready_tx, pass1_ready_rx) = oneshot::channel();
@@ -122,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     
     let translator = Translator::new(event_rx_translator, translation_tx);
-    tokio::spawn(translator.translate());
+    tokio::spawn(translator.translate(std::sync::Arc::clone(&translation_buffer)));
 
     if std::env::args().any(|arg| arg == "--bench") {
         tracing::info!("Benchmark mode: models loaded, exiting.");
@@ -135,13 +133,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_title("Arch Translator"),
         ..Default::default()
     };
-
+    let handle = Handle::current();
     eframe::run_native(
         "translator_ui",
         native_options,
         Box::new(|_cc| {
             _cc.egui_ctx.set_zoom_factor(1.5);
-            Ok(Box::new(App::new(event_rx_ui, device_tx)))
+            Ok(Box::new(App::new(
+                event_rx_ui,
+                translation_rx,
+                translation_buffer,
+                device_tx,
+                handle,
+            )))
         }),
     ).map_err(|e| format!("eframe error: {}", e))?;
     
@@ -149,20 +153,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 struct App {
-    event_rx: mpsc::Receiver<TranscriptEvent>,
-    transcription: BTreeMap<u32, PhraseData>,
+    event_rx:           mpsc::Receiver<TranscriptEvent>,
+    translation_rx:     mpsc::Receiver<TranslationEvent>,
+    translation_buffer: Arc<TranslationBuffer>,
+    handle:             Handle,
 
-    device_tx: Option<oneshot::Sender<String>>,
-    available_devices: Vec<String>,
-    selected_device: String,
-    is_running: bool,
+    transcription:      BTreeMap<u32, PhraseData>,
+    translations:       HashMap<u32, Vec<(usize, usize, String)>>,
+    phrases_signaled:   HashSet<u32>,
 
-    preview_stream: Option<cpal::Stream>,
-    last_selected: String,
-
-    pending_config: config::StartupConfig,
+    device_tx:          Option<oneshot::Sender<String>>,
+    available_devices:  Vec<String>,
+    selected_device:    String,
+    last_selected:      String,
+    is_running:         bool,
+    preview_stream:     Option<cpal::Stream>,
+    pending_config:     config::StartupConfig,
     available_languages: Vec<(&'static str, &'static str)>,
-    available_gpus: Vec<(i32, String)>,
+    available_gpus:     Vec<(i32, String)>,
 }
 
 fn get_available_gpus() -> Vec<(i32, String)> {
@@ -219,30 +227,37 @@ fn get_available_gpus() -> Vec<(i32, String)> {
 }
 
 impl App {
-    pub fn new(event_rx: mpsc::Receiver<TranscriptEvent>, device_tx: oneshot::Sender<String>) -> Self {
+    pub fn new(
+        event_rx: mpsc::Receiver<TranscriptEvent>,
+        translation_rx: mpsc::Receiver<TranslationEvent>,
+        translation_buffer: Arc<TranslationBuffer>,
+        device_tx: oneshot::Sender<String>,
+        handle: Handle,
+    ) -> Self {
         let devices = audio::get_input_devices();
         let saved_device = config::get_device();
         let cfg = config::startup();
-
-        let selected = if devices.contains(&saved_device) {
-            saved_device
-        } else {
-            devices.first().cloned().unwrap_or_default()
-        };
+        let selected = if devices.contains(&saved_device) { saved_device }
+                       else { devices.first().cloned().unwrap_or_default() };
         let preview = audio::start_preview(&selected);
 
         Self {
             event_rx,
+            translation_rx,
+            translation_buffer,
+            handle,
             transcription: BTreeMap::new(),
+            translations: HashMap::new(),
+            phrases_signaled: HashSet::new(),
             device_tx: Some(device_tx),
             available_devices: devices,
             last_selected: selected.clone(),
             selected_device: selected,
             is_running: false,
             preview_stream: preview,
-            pending_config: cfg.clone(),
+            pending_config: cfg,
             available_languages: vec![
-                ("en", "English"), ("uk", "Ukrainian"), ("ru", "Russian"), ("auto", "Auto-detect")
+                ("en", "English"), ("uk", "Ukrainian"), ("ru", "Russian"), ("auto", "Auto-detect"),
             ],
             available_gpus: get_available_gpus(),
         }
@@ -279,6 +294,17 @@ impl App {
                         duration_s,
                         rtf,
                     });
+                }
+            }
+        }
+        while let Ok(evt) = self.translation_rx.try_recv() {
+            got_event = true;
+            match evt {
+                TranslationEvent::Translate { phrase_id, word_index, span, text } => {
+                    self.translations
+                        .entry(phrase_id)
+                        .or_default()
+                        .push((word_index, span, text));
                 }
             }
         }
@@ -430,17 +456,62 @@ impl eframe::App for App {
 
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                 for (id, data) in &self.transcription {
-                    ui.horizontal(|ui| {
-                        ui.weak(format!("[{id}]"));
+                    if data.is_final {
+                        let words: Vec<&str> = data.text.split_whitespace().collect();
 
-                        if data.is_final {
-                            ui.colored_label(egui::Color32::LIGHT_GREEN, &data.text);
-                            
+                        let word_rects = ui.horizontal(|ui| {
+                            ui.weak(format!("[{id}]"));
+                            let mut rects = Vec::with_capacity(words.len());
+                            for word in &words {
+                                let r = ui.colored_label(egui::Color32::LIGHT_GREEN, *word);
+                                rects.push(r.rect);
+                            }
                             ui.weak(format!("({:.1}s | RTF: {:.2})", data.duration_s, data.rtf));
-                        } else {
-                            ui.colored_label(egui::Color32::GRAY, format!("{} ⏳", data.text));
+                            rects
+                        }).inner;
+
+                        if !self.phrases_signaled.contains(id) && !word_rects.is_empty() {
+                            self.phrases_signaled.insert(*id);
+                            let buf = Arc::clone(&self.translation_buffer);
+                            let pid = *id;
+                            self.handle.spawn(async move {
+                                buf.signal_ready(pid).await;
+                            });
                         }
-                    });
+
+                        // Рисуем переводы под словами
+                        if let Some(trans) = self.translations.get(id) {
+                            if !trans.is_empty() && !word_rects.is_empty() {
+                                let y = word_rects[0].max.y + 2.0;
+                                let painter = ui.painter();
+
+                                for (word_index, span, text) in trans {
+                                    if *word_index >= word_rects.len() { continue; }
+
+                                    let x_left  = word_rects[*word_index].min.x;
+                                    let x_right = word_rects
+                                        .get(word_index + span - 1)
+                                        .map(|r| r.max.x)
+                                        .unwrap_or(word_rects[*word_index].max.x);
+                                    let x_center = (x_left + x_right) / 2.0;
+
+                                    painter.text(
+                                        egui::pos2(x_center, y),
+                                        egui::Align2::CENTER_TOP,
+                                        text,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::RED,
+                                    );
+                                }
+                                ui.add_space(16.0);
+                            }
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.weak(format!("[{id}]"));
+                            ui.colored_label(egui::Color32::GRAY, format!("{} ⏳", data.text));
+                        });
+                    }
                 }
             });
         });
@@ -539,6 +610,8 @@ impl eframe::App for App {
             
             if ui.button("Reset Transcription").clicked() {
                 self.transcription.clear();
+                self.translations.clear();
+                self.phrases_signaled.clear();
             }
         });
     }

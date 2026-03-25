@@ -1,5 +1,8 @@
 use std::sync::Arc;
 pub type AudioPacket = Vec<f32>;
+use std::collections::HashMap;
+use tokio::sync::{Notify, Mutex};
+
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEvent {
@@ -9,7 +12,39 @@ pub enum TranscriptEvent {
 
 #[derive(Clone)]
 pub enum TranslationEvent {
-    Translate { phrase_id: u32, text: String, },
+    Translate { 
+        phrase_id: u32,
+        word_index: usize,
+        span: usize, 
+        text: String,
+    }
+}
+
+struct PhraseBuffer {
+    words:    Vec<TranslationEvent>,
+    ui_ready: Arc<Notify>,
+}
+
+pub struct TranslationBuffer {
+    notifiers: Mutex<HashMap<u32, Arc<Notify>>>,
+}
+
+impl TranslationBuffer {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { notifiers: Mutex::new(HashMap::new()) })
+    }
+
+    pub async fn register(&self, phrase_id: u32) -> Arc<Notify> {
+        let notify = Arc::new(Notify::new());
+        self.notifiers.lock().await.insert(phrase_id, Arc::clone(&notify));
+        notify
+    }
+
+    pub async fn signal_ready(&self, phrase_id: u32) {
+        if let Some(notify) = self.notifiers.lock().await.remove(&phrase_id) {
+            notify.notify_one();
+        }
+    }
 }
 
 #[derive(Clone)]
