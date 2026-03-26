@@ -20,11 +20,6 @@ pub enum TranslationEvent {
     }
 }
 
-struct PhraseBuffer {
-    words:    Vec<TranslationEvent>,
-    ui_ready: Arc<Notify>,
-}
-
 pub struct TranslationBuffer {
     notifiers: Mutex<HashMap<u32, Arc<Notify>>>,
 }

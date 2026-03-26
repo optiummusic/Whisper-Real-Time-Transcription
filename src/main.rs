@@ -167,6 +167,8 @@ struct App {
 
     transcription:      BTreeMap<u32, PhraseData>,
     translations:       HashMap<u32, Vec<(usize, usize, String)>>,
+    phrase_rects:       HashMap<u32, Vec<egui::Rect>>,
+    last_available_width: f32,
     phrases_signaled:   HashSet<u32>,
 
     device_tx:          Option<oneshot::Sender<String>>,
@@ -260,7 +262,9 @@ impl App {
             handle,
             transcription: BTreeMap::new(),
             translations: HashMap::new(),
+            phrase_rects: HashMap::new(),
             phrases_signaled: HashSet::new(),
+            last_available_width: 0.0,
             device_tx: Some(device_tx),
             available_devices: devices,
             last_selected: selected.clone(),
@@ -473,71 +477,10 @@ impl eframe::App for App {
         }
         self.update_data(ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(":) Live Transcription");
-            ui.separator();
-
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for (id, data) in &self.transcription {
-                    if data.is_final {
-                        let words: Vec<&str> = data.text.split_whitespace().collect();
-
-                        let word_rects = ui.horizontal(|ui| {
-                            ui.weak(format!("[{id}]"));
-                            let mut rects = Vec::with_capacity(words.len());
-                            for word in &words {
-                                let r = ui.colored_label(egui::Color32::LIGHT_GREEN, *word);
-                                rects.push(r.rect);
-                            }
-                            ui.weak(format!("({:.1}s | RTF: {:.2})", data.duration_s, data.rtf));
-                            rects
-                        }).inner;
-
-                        if !self.phrases_signaled.contains(id) && !word_rects.is_empty() {
-                            self.phrases_signaled.insert(*id);
-                            let buf = Arc::clone(&self.translation_buffer);
-                            let pid = *id;
-                            self.handle.spawn(async move {
-                                buf.signal_ready(pid).await;
-                            });
-                        }
-
-                        if let Some(trans) = self.translations.get(id) {
-                            if !trans.is_empty() && !word_rects.is_empty() {
-                                let y = word_rects[0].max.y + 2.0;
-                                let painter = ui.painter();
-
-                                for (word_index, span, text) in trans {
-                                    if *word_index >= word_rects.len() { continue; }
-
-                                    let x_left  = word_rects[*word_index].min.x;
-                                    let x_right = word_rects
-                                        .get(word_index + span - 1)
-                                        .map(|r| r.max.x)
-                                        .unwrap_or(word_rects[*word_index].max.x);
-                                    let x_center = (x_left + x_right) / 2.0;
-
-                                    painter.text(
-                                        egui::pos2(x_center, y),
-                                        egui::Align2::CENTER_TOP,
-                                        text,
-                                        egui::FontId::proportional(11.0),
-                                        egui::Color32::RED,
-                                    );
-                                }
-                                ui.add_space(16.0);
-                            }
-                        }
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.weak(format!("[{id}]"));
-                            ui.colored_label(egui::Color32::GRAY, format!("{} ⏳", data.text));
-                        });
-                    }
-                }
-            });
-        });
-        egui::SidePanel::right("settings").show(ctx, |ui| {
+        egui::SidePanel::right("settings")
+            .min_width(330.0)
+            .max_width(330.0)  
+            .resizable(false).show(ctx, |ui| {
             ui.heading("Settings");
             ui.add_space(8.0);
 
@@ -640,6 +583,85 @@ impl eframe::App for App {
                 self.translations.clear();
                 self.phrases_signaled.clear();
             }
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading(":) Live Transcription");
+            ui.separator();
+            let available_width = ui.available_width();
+            if (available_width - self.last_available_width).abs() > 1.0 {
+                self.phrase_rects.clear();
+                self.last_available_width = available_width;
+            }
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                for (id, data) in &self.transcription {
+                    if data.is_final {
+                        let words: Vec<&str> = data.text.split_whitespace().collect();
+                        let trans = self.translations.get(id).cloned().unwrap_or_default();
+
+                        let row_groups: Vec<Vec<usize>> = if let Some(prev_rects) = self.phrase_rects.get(id) {
+                            let mut rows: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+                            for (i, r) in prev_rects.iter().enumerate() {
+                                rows.entry(r.min.y as i32).or_default().push(i);
+                            }
+                            rows.into_values().collect()
+                        } else {
+                            vec![(0..words.len()).collect()]
+                        };
+
+                        let row_count = row_groups.len();
+                        let mut new_rects: Vec<egui::Rect> = vec![egui::Rect::NOTHING; words.len()];
+
+                        for (row_idx, row_word_indices) in row_groups.iter().enumerate() {
+                            let row_rects = ui.horizontal_wrapped(|ui| {
+                                if row_idx == 0 { ui.weak(format!("[{id}]")); }
+                                let mut rects = vec![];
+                                for &wi in row_word_indices {
+                                    if wi < words.len() {
+                                        let r = ui.colored_label(egui::Color32::LIGHT_GREEN, words[wi]);
+                                        rects.push((wi, r.rect));
+                                    }
+                                }
+                                if row_idx == row_count - 1 {
+                                    ui.weak(format!("({:.1}s | RTF: {:.2})", data.duration_s, data.rtf));
+                                }
+                                rects
+                            }).inner;
+
+                            for (wi, rect) in row_rects {
+                                if wi < new_rects.len() { new_rects[wi] = rect; }
+                            }
+
+                            let row_set: HashSet<usize> = row_word_indices.iter().copied().collect();
+                            let row_trans: Vec<_> = trans.iter()
+                                .filter(|(wi, _, _)| row_set.contains(wi))
+                                .collect();
+
+                            if !row_trans.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for (_, _, text) in &row_trans {
+                                        ui.colored_label(egui::Color32::RED, text);
+                                    }
+                                });
+                            }
+                        }
+
+                        self.phrase_rects.insert(*id, new_rects);
+
+                        if !self.phrases_signaled.contains(id) && !words.is_empty() {
+                            self.phrases_signaled.insert(*id);
+                            let buf = Arc::clone(&self.translation_buffer);
+                            let pid = *id;
+                            self.handle.spawn(async move { buf.signal_ready(pid).await; });
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.weak(format!("[{id}]"));
+                            ui.colored_label(egui::Color32::GRAY, format!("{} ⏳", data.text));
+                        });
+                    }
+                }
+            });
         });
     }
 

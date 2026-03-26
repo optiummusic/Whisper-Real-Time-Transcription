@@ -162,7 +162,7 @@ pub async fn recording_task(
     while let Some(text) = rx.recv().await {
         if should_save.load(std::sync::atomic::Ordering::Relaxed) {
             count += 1;
-            let suffix = if count % 5 == 0 { ".\n" } else { " " };
+            let suffix = if count % 4 == 0 { ".\n" } else { " " };
             let _ = file.write_all(format!("{}{}", text, suffix).as_bytes()).await;
             let _ = file.flush().await; 
         }
