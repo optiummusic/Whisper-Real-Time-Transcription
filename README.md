@@ -104,7 +104,7 @@ cd Whisper-Real-Time-Transcription
 **2. Download the Silero VAD model**
 ```bash
 wget -P models/vad/ \
-  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx](https://github.com/snakers4/silero-vad/raw/v4.0/files/silero_vad.onnx
 ```
 
 **3. Download Whisper models**
