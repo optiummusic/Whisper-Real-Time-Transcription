@@ -20,6 +20,7 @@ static MAX_WINDOW_SEC_X10: AtomicU32   = AtomicU32::new(100);
 static MAX_PHRASE_SEC_X10: AtomicU32   = AtomicU32::new(120);
 static MIN_PHRASE_SEC_X10: AtomicU32   = AtomicU32::new(20);
 static SELECTED_DEVICE:    OnceLock<RwLock<String>> = OnceLock::new();
+static AUDIO_GAIN_X100: AtomicU32 = AtomicU32::new(100);
 
 fn device_storage() -> &'static RwLock<String> { SELECTED_DEVICE.get_or_init(|| RwLock::new(String::new())) }
 
@@ -35,6 +36,7 @@ pub fn max_window()             -> usize  { (MAX_WINDOW_SEC_X10.load(Ordering::R
 pub fn max_phrase_samples()     -> usize  { (MAX_PHRASE_SEC_X10.load(Ordering::Relaxed) as f32 / 10.0 * TARGET_SAMPLE_RATE as f32) as usize }
 pub fn min_phrase_samples()     -> usize  { (MIN_PHRASE_SEC_X10.load(Ordering::Relaxed) as f32 / 10.0 * TARGET_SAMPLE_RATE as f32) as usize }
 pub fn get_device()             -> String { device_storage().read().unwrap().clone() }
+pub fn audio_gain() -> f32 { AUDIO_GAIN_X100.load(Ordering::Relaxed) as f32 / 100.0 }
 
 pub fn set_speech_probability(v: f32)     { SPEECH_PROB_X1000.store((v * 1000.0) as u32, Ordering::Relaxed); }
 pub fn set_max_silence_chunks(v: usize)   { MAX_SILENCE_CHK.store(v, Ordering::Relaxed); }
@@ -47,6 +49,7 @@ pub fn set_max_window_secs(v: f32)        { MAX_WINDOW_SEC_X10.store((v.max(min_
 pub fn set_max_phrase_secs(v: f32)        { MAX_PHRASE_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
 pub fn set_min_phrase_secs(v: f32)        { MIN_PHRASE_SEC_X10.store((v * 10.0) as u32, Ordering::Relaxed); }
 pub fn set_device(name: String)           { let mut lock = device_storage().write().unwrap(); *lock = name; }
+pub fn set_audio_gain(v: f32) { AUDIO_GAIN_X100.store((v * 100.0) as u32, Ordering::Relaxed); }
 
 #[derive(Debug, Clone)]
 pub struct StartupConfig {
@@ -55,6 +58,7 @@ pub struct StartupConfig {
     pub use_gpu_acc:     bool,
     pub gpu_device_fast: i32,
     pub gpu_device_acc:  i32,
+    pub audio_gain:      f32,
 }
 
 static STARTUP_DATA: OnceLock<RwLock<StartupConfig>> = OnceLock::new();
@@ -66,6 +70,7 @@ fn startup_storage() -> &'static RwLock<StartupConfig> {
         use_gpu_acc: true,
         gpu_device_fast: 0,
         gpu_device_acc: 0,
+        audio_gain: 1.0,
     }))
 }
 
@@ -73,15 +78,17 @@ pub fn startup() -> StartupConfig {
     startup_storage().read().unwrap().clone()
 }
 
-pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool, gpu_fast: i32, gpu_acc: i32) {
+pub fn init(language: String, use_gpu_fast: bool, use_gpu_acc: bool, gpu_fast: i32, gpu_acc: i32, audio_gain: f32) {
     let mut lock = startup_storage().write().unwrap();
     *lock = StartupConfig { 
         language, 
         use_gpu_fast, 
         use_gpu_acc, 
         gpu_device_fast: gpu_fast, 
-        gpu_device_acc: gpu_acc 
+        gpu_device_acc: gpu_acc, 
+        audio_gain,
     };
+    set_audio_gain(audio_gain);
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -103,6 +110,8 @@ pub struct TomlConfig {
     pub max_phrase_secs:      Option<f32>, 
     pub gpu_device_fast:      Option<i32>,
     pub gpu_device_acc:       Option<i32>,
+
+    pub audio_gain:           Option<f32>,
 }
  
 pub fn load_from_toml(path: &str) {
@@ -127,6 +136,7 @@ pub fn load_from_toml(path: &str) {
     if let Some(v) = cfg.max_window_secs      { set_max_window_secs(v); }
     if let Some(v) = cfg.min_phrase_secs      { set_min_phrase_secs(v); }
     if let Some(v) = cfg.max_phrase_secs      { set_max_phrase_secs(v); }
+    if let Some(v) = cfg.audio_gain { set_audio_gain(v); }
 
     if let Some(d) = cfg.device {
         set_device(d);
@@ -138,6 +148,7 @@ pub fn load_from_toml(path: &str) {
         cfg.use_gpu_acc.unwrap_or(true),
         cfg.gpu_device_fast.unwrap_or(0),
         cfg.gpu_device_acc.unwrap_or(0),
+        cfg.audio_gain.unwrap_or(1.0),
     );
 }
  
@@ -157,6 +168,7 @@ pub fn save_to_toml(path: &str) {
         max_window_secs:      Some(max_window() as f32 / TARGET_SAMPLE_RATE as f32),
         min_phrase_secs:      Some(min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
         max_phrase_secs:      Some(max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
+        audio_gain:           Some(audio_gain()),
         ..Default::default()
     };
     match toml::to_string_pretty(&cfg) {

@@ -359,9 +359,21 @@ impl App {
                                 ui.selectable_value(&mut self.selected_device, dev.clone(), dev);
                             }
                         });
-                    
-                    let level = audio::get_ui_level();
-                    ui.add(egui::ProgressBar::new(level).desired_width(300.0));
+
+                    ui.add_space(5.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Mic Boost:");
+                        if ui.add(egui::Slider::new(&mut self.pending_config.audio_gain, 1.0..=10.0)
+                            .step_by(0.1))
+                            .changed() 
+                        {
+                            config::set_audio_gain(self.pending_config.audio_gain);
+                        }
+                    });
+
+                    let level = audio::get_ui_level() * self.pending_config.audio_gain;
+                    ui.add(egui::ProgressBar::new(level.min(1.0)).desired_width(300.0));
                     ui.add_space(5.0);
                     if ui.button("🔄").on_hover_text("Refresh devices").clicked() {
                         self.refresh_devices();
@@ -456,6 +468,7 @@ impl App {
                         self.pending_config.use_gpu_acc,
                         self.pending_config.gpu_device_fast,
                         self.pending_config.gpu_device_acc,
+                        self.pending_config.audio_gain,
                     );
                     config::set_device(self.selected_device.clone());
                     config::save_to_toml("config.toml");
@@ -486,6 +499,23 @@ impl eframe::App for App {
             .max_width(330.0)  
             .resizable(false).show(ctx, |ui| {
             ui.heading("Settings");
+            ui.add_space(8.0);
+            
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Audio Input").strong());
+                
+                let mut gain = config::audio_gain();
+                if ui.add(egui::Slider::new(&mut gain, 1.0..=10.0)
+                    .text("Mic Boost"))
+                    .changed() 
+                {
+                    config::set_audio_gain(gain);
+                }
+                
+                let level = audio::get_ui_level() * gain;
+                ui.add(egui::ProgressBar::new(level.min(1.0)).desired_width(ui.available_width()));
+            });
+            
             ui.add_space(8.0);
 
             ui.group(|ui| {

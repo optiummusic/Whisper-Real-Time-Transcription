@@ -11,3 +11,4 @@ min_phrase_secs = 1.0
 max_phrase_secs = 12.0
 gpu_device_fast = 0
 gpu_device_acc = 0
+audio_gain = 10.0

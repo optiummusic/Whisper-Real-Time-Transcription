@@ -148,9 +148,18 @@ fn create_audio_stream(
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _| {
-            //tracing::trace!("Audio callback: received {} samples", data.len());
+            let current_gain = crate::config::audio_gain();
+            let local_max = data.iter()
+                .fold(0.0f32, |m, &v| m.max(v.abs())) * current_gain;
+
+            update_peak(local_max);
+            
             let mono_iter = data.chunks_exact(channels)
-                .map(|ch| ch.iter().sum::<f32>() / channels as f32);
+                .map(|ch| {
+                    let sum: f32 = ch.iter().sum();
+                    let amplified = (sum / channels as f32) * current_gain;
+                    amplified.clamp(-1.0, 1.0) 
+                });
  
             if let Some(ref mut rs) = resampler {
                 raw_buf.extend(mono_iter);
