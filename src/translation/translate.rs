@@ -24,11 +24,10 @@ impl Translator {
         event: mpsc::Receiver<TranscriptEvent>,
         send: mpsc::Sender<TranslationEvent>,
     ) -> Self {
-        let relative_path = "dictionary/rules.toml";
-        let dict_path = get_model_path(relative_path);
-        tracing::info!("Resolved dictionary path: {:?}", dict_path);
+        let dict_dir = get_model_path("dictionary");
+        tracing::info!("Resolved dictionary path: {:?}", dict_dir);
         
-        let initial_dict = Self::load_dict(&dict_path);
+        let initial_dict = Self::load_dicts(&dict_dir);
         let dictionary = Arc::new(RwLock::new(initial_dict));
 
         let translator = Self { 
@@ -37,11 +36,11 @@ impl Translator {
             dictionary
         };
 
-        translator.spawn_dict_watcher(dict_path);
+        translator.spawn_dict_watcher(dict_dir);
         translator
     }
 
-    fn spawn_dict_watcher(&self, path: PathBuf) {
+    fn spawn_dict_watcher(&self, dir_path: PathBuf) {
         let dict_clone = Arc::clone(&self.dictionary);
         
         std::thread::Builder::new()
@@ -49,15 +48,25 @@ impl Translator {
             .spawn(move || {
                 let mut last_mtime = None;
                 loop {
-                    if let Ok(meta) = fs::metadata(&path) {
-                        let mtime = meta.modified().ok();
-                        if mtime != last_mtime {
-                            last_mtime = mtime;
-                            let new_rules = Self::load_dict(&path);
-                            if let Ok(mut w) = dict_clone.write() {
-                                *w = new_rules;
-                                tracing::info!("Translator: Dictionary reloaded from {:?}", path);
+                    let mut current_max_mtime = None;
+                    if let Ok(entries) = fs::read_dir(&dir_path) {
+                        for entry in entries.flatten() {
+                            if entry.path().extension().and_then(|s| s.to_str()) == Some("toml") {
+                                if let Ok(meta) = entry.metadata() {
+                                    if let Ok(mtime) = meta.modified() {
+                                        current_max_mtime = Some(current_max_mtime.unwrap_or(mtime).max(mtime));
+                                    }
+                                }
                             }
+                        }
+                    }
+                    
+                    if current_max_mtime.is_some() && current_max_mtime != last_mtime {
+                        last_mtime = current_max_mtime;
+                        let new_rules = Self::load_dicts(&dir_path);
+                        if let Ok(mut w) = dict_clone.write() {
+                            *w = new_rules;
+                            tracing::info!("Translator: Dictionaries reloaded from {:?}", dir_path);
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -66,33 +75,32 @@ impl Translator {
             .expect("Failed to spawn dict-watcher thread");
     }
 
-    fn load_dict(path: &Path) -> HashMap<String, String> {
-        tracing::info!("Loading dictionary from: {:?}", path);
+    fn load_dicts(dir_path: &Path) -> HashMap<String, String> {
+        tracing::info!("Loading dictionaries from: {:?}", dir_path);
+        let mut combined_rules = HashMap::new();
         
-        let content = fs::read_to_string(path).unwrap_or_else(|e| {
-            tracing::error!("Failed to read dictionary file {:?}: {}", path, e);
-            String::new()
-        });
-        
-        let dict: DictFile = toml::from_str(&content).unwrap_or_else(|e| {
-            tracing::error!("Failed to parse TOML dictionary: {}", e);
-            DictFile::default()
-        });
-
-        let mut processed = HashMap::with_capacity(dict.rules.len() * 2);
-        
-        for (k, v) in dict.rules {
-            let key = k.to_lowercase();
-            let val = v.to_lowercase();
-            
-            processed.insert(key.clone(), v.clone());
-            if !processed.contains_key(&val) {
-                processed.insert(val, k); 
+        if let Ok(entries) = fs::read_dir(dir_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                    let content = fs::read_to_string(&path).unwrap_or_default();
+                    if let Ok(dict) = toml::from_str::<DictFile>(&content) {
+                        for (k, v) in dict.rules {
+                            let key = k.to_lowercase();
+                            let val = v.to_lowercase();
+                            
+                            combined_rules.insert(key.clone(), v.clone());
+                            if !combined_rules.contains_key(&val) {
+                                combined_rules.insert(val, k); 
+                            }
+                        }
+                    }
+                }
             }
         }
             
-        tracing::info!("Dictionary loaded. Unique bidirectional rules: {}", processed.len());
-        processed
+        tracing::info!("Dictionaries loaded. Unique bidirectional rules: {}", combined_rules.len());
+        combined_rules
     }
 
     fn lookup(&self, key: &str) -> Option<String> {

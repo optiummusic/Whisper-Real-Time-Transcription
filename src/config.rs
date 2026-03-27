@@ -1,8 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{ RwLock, OnceLock };
 
-use ort::device;
-
 pub const TARGET_SAMPLE_RATE:   u32   = 16_000;
 pub const VAD_CHUNK_SIZE:       usize = 512;
 

@@ -3,7 +3,7 @@ use std::path::{ Path, PathBuf };
 use std::fs;
 use std::sync::OnceLock;
 use crate::config;
-use tokio::sync::{ mpsc, oneshot };
+use tokio::sync::{ mpsc };
 use tokio::io::AsyncWriteExt;
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
@@ -166,5 +166,26 @@ pub async fn recording_task(
             let _ = file.write_all(format!("{}{}", text, suffix).as_bytes()).await;
             let _ = file.flush().await; 
         }
+    }
+}
+
+pub fn add_to_custom_dict(word: &str, translation: &str) {
+    let dict_dir = crate::utils::get_model_path("dictionary");
+    let _ = std::fs::create_dir_all(&dict_dir);
+    let custom_path = dict_dir.join("custom.toml");
+
+    let content = std::fs::read_to_string(&custom_path).unwrap_or_else(|_| "[rules]\n".to_string());
+    let mut new_content = content.trim_end().to_string();
+    
+    if !new_content.contains("[rules]") {
+        new_content.push_str("\n[rules]");
+    }
+    
+    new_content.push_str(&format!("\n\"{}\" = \"{}\"\n", word, translation));
+    
+    if let Err(e) = std::fs::write(&custom_path, new_content) {
+        tracing::error!("Failed to write to custom dict: {}", e);
+    } else {
+        tracing::info!("Added '{}' -> '{}' to custom.toml", word, translation);
     }
 }

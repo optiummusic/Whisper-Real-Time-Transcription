@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ndarray::{Array, Array2, Array3};
 use ort::{inputs, session::Session, value::TensorValueType, value::Value};
 use tokio::sync:: { oneshot, mpsc };
-use tracing::{info, warn};
+use tracing::{warn};
 
 use crate::config::{
     self, STITCH_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE,
@@ -17,7 +17,6 @@ pub struct VadEngine {
     h: Array3<f32>,
     c: Array3<f32>,
     sr: Value<TensorValueType<i64>>,
-    input_buf: Vec<f32>,
 
     stream_buf: Vec<f32>,
     phrase_id: u32,
@@ -53,7 +52,6 @@ impl VadEngine {
             h,
             c,
             sr,
-            input_buf: vec![0.0; VAD_CHUNK_SIZE],
             stream_buf: Vec::with_capacity(STREAM_CHUNK_SAMPLES),
             phrase_id: 0,
             chunk_id: 0,

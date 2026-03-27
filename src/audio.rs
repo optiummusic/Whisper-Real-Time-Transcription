@@ -66,6 +66,7 @@ fn make_resampler(source_rate: f64, chunk_size: usize) -> Async<f32> {
     .expect("Failed to create rubato resampler")
 }
 
+#[allow(deprecated)] // !!!DEVICE.NAME DEPRECATED!!!
 pub fn start_preview(device_name: &str) -> Option<cpal::Stream> {
     let host = cpal::default_host();
     let device = host.input_devices().ok()?.into_iter()

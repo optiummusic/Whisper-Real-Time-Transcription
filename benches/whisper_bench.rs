@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 use translator::whisper::engine::{run_whisper, WhisperConfig};
 use translator::utils::find_first_file_in_dir; // используем имя библиотеки
