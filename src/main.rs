@@ -5,7 +5,6 @@ use eframe::egui;
 use tokio::{runtime::Handle, sync:: { mpsc, oneshot }};
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
-use thread_priority::*;
 use wgpu::{Instance, InstanceDescriptor, Backends, Adapter, DeviceType};
 use std::sync::atomic::AtomicBool;
 
@@ -63,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx, mut event_rx_main) = mpsc::channel::<TranscriptEvent>(64);
     let (event_tx_ui, event_rx_ui) = mpsc::channel::<TranscriptEvent>(64);
     let (event_tx_translator, event_rx_translator) = mpsc::channel::<TranscriptEvent>(64);
-    let (translation_tx, mut translation_rx) = mpsc::channel::<TranslationEvent>(64);
+    let (translation_tx, translation_rx) = mpsc::channel::<TranslationEvent>(64);
     let translation_buffer = translator::types::TranslationBuffer::new();
 
     let (vad_ready_tx,   vad_ready_rx)   = oneshot::channel();
@@ -184,6 +183,9 @@ struct App {
     save_transcription: Arc<AtomicBool>,
     transcript_path: String,
     save_tx: Option<mpsc::Sender<String>>,
+
+    dict_new_word: String,
+    dict_new_trans: String,
 }
 
 fn get_available_gpus() -> Vec<(i32, String)> {
@@ -279,6 +281,8 @@ impl App {
             save_transcription: save_flag,
             save_tx: None,
             transcript_path: format!("transcriptions/{}.txt", chrono::Local::now().format("%Y_%m_%d_%H_%M")),
+            dict_new_word: String::new(),
+            dict_new_trans: String::new(),
         }
     }
 
@@ -582,7 +586,28 @@ impl eframe::App for App {
                 self.transcription.clear();
                 self.translations.clear();
                 self.phrases_signaled.clear();
+                self.phrase_rects.clear();
             }
+
+            ui.add_space(8.0);
+
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("Dictionary (Live)").strong());
+                
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.dict_new_word).desired_width(120.0).hint_text("Word"));
+                    ui.label("->");
+                    ui.add(egui::TextEdit::singleline(&mut self.dict_new_trans).desired_width(120.0).hint_text("Translation"));
+                });
+                
+                if ui.button("Add to custom.toml").clicked() {
+                    if !self.dict_new_word.is_empty() && !self.dict_new_trans.is_empty() {
+                        translator::utils::add_to_custom_dict(&self.dict_new_word, &self.dict_new_trans);
+                        self.dict_new_word.clear();
+                        self.dict_new_trans.clear();
+                    }
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {

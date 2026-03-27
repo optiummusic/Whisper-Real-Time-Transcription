@@ -1,15 +1,10 @@
 pub mod engine;
 
 use std::sync::mpsc::TrySendError;
-use std::path::Path;
-use std::time::Duration;
-use std::{fs, thread};
 use std::sync::Arc;
-use std::collections::{ HashMap, VecDeque };
-use std::ffi::c_void;
-use std::sync::{Mutex, LazyLock, OnceLock};
+use std::collections::{ HashMap };
 use tokio::sync::{ mpsc, oneshot };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace };
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
@@ -18,7 +13,7 @@ use self::engine::{run_whisper, WhisperConfig};
 use crate::{Pass1Job, Pass2Job, Pass1Result};
 
 use crate::config::{
-    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE, STREAM_CHUNK_SAMPLES, STITCH_MIN_SAMPLES, PASS1_MIN_SAMPLES, VAD_CHUNK_DURATION_S 
+    TARGET_SAMPLE_RATE, STREAM_CHUNK_SAMPLES, PASS1_MIN_SAMPLES
 };
 use crate::config;
 

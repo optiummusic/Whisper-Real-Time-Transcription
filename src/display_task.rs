@@ -12,7 +12,7 @@ pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
 
     while let Some(event) = rx.recv().await {
         match event {
-            TranscriptEvent::Partial { phrase_id, chunk_id, text, .. } => {
+            TranscriptEvent::Partial { phrase_id, chunk_id: _, text, .. } => {
                 if finalized.contains(&phrase_id) {
                     debug!(phrase_id, "got partial for finalized phrase — ignoring");
                     continue;

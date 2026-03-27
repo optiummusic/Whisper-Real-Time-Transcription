@@ -1,10 +1,8 @@
 # Whisper Real-Time Transcription
 # ONLY USE SILERO VAD VERSION 4!
-A fully offline, real-time 
+A fully offline, real-time speech transcription tool written in Rust. Built around a two-pass Whisper pipeline with Silero VAD for voice detection — designed to help understand foreign-language audio with low latency.
 
 https://github.com/user-attachments/assets/fe91eb4a-0f2a-47c8-8536-2a978c4a61de
-
-speech transcription tool written in Rust. Built around a two-pass Whisper pipeline with Silero VAD for voice detection — designed to help understand foreign-language audio with low latency.
 
 ## How it works
 
@@ -91,8 +89,8 @@ The easiest way is to use the provided install script:
 ```bash
 git clone https://github.com/optiummusic/Whisper-Real-Time-Transcription.git
 cd Whisper-Real-Time-Transcription
-chmod +x install.sh
-./install.sh
+chmod +x setup.sh
+./setup.sh
 ```
 
 The script will download the models and build the binary for you.
