@@ -70,39 +70,39 @@ jobs:
   #         path: arch-translator-macos-metal.zip
 
   # ── Windows: CUDA ───────────────────────────────────────────────
-  build-windows-cuda:
-    name: Windows (CUDA)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-          choco install llvm -y
-      - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
-        id: cuda-toolkit
-        with:
-          cuda: '12.4.0'
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        shell: pwsh
-        run: |
-          $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          $env:CUDACXX = "$env:CUDA_PATH\bin\nvcc.exe"
-          cargo build --release --features cuda --no-default-features
+  # build-windows-cuda:
+  #   name: Windows (CUDA)
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install dependencies
+  #       run: |
+  #         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+  #         choco install llvm -y
+  #     - name: Install CUDA toolkit
+  #       uses: Jimver/cuda-toolkit@v0.2.19
+  #       id: cuda-toolkit
+  #       with:
+  #         cuda: '12.4.0'
+  #         method: network
+  #         sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #     - name: Build
+  #       shell: pwsh
+  #       run: |
+  #         $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+  #         $env:CUDACXX = "$env:CUDA_PATH\bin\nvcc.exe"
+  #         cargo build --release --features cuda --no-default-features
           
-          New-Item -ItemType Directory -Force -Path "pkg"
-          Copy-Item "target/release/translator.exe" -Destination "pkg/"
-          Copy-Item "target/release/*.dll" -Destination "pkg/"
-          Compress-Archive -Path "pkg/*" -DestinationPath "arch-translator-win-cuda.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-cuda
-          path: arch-translator-win-cuda.zip
+  #         New-Item -ItemType Directory -Force -Path "pkg"
+  #         Copy-Item "target/release/translator.exe" -Destination "pkg/"
+  #         Copy-Item "target/release/*.dll" -Destination "pkg/"
+  #         Compress-Archive -Path "pkg/*" -DestinationPath "arch-translator-win-cuda.zip"
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: windows-cuda
+  #         path: arch-translator-win-cuda.zip
 
   # ── Windows: CPU ────────────────────────────────────────────────
   # build-windows-cpu:
@@ -198,7 +198,7 @@ jobs:
   publish:
     name: Create GitHub Release
     # needs: [build-linux, build-macos, build-windows-cuda, build-windows-cpu, build-windows-vulkan]
-    needs: [build-windows-cuda, build-windows-vulkan]
+    needs: [build-windows-vulkan]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

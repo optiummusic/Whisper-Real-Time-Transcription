@@ -34,21 +34,44 @@ pub async fn pass1_task(
  
         while let Some(job) = job_rx.blocking_recv() {
             if s.is_none() {
-                tracing::info!("Pass1: Lazy loading model with current config...");
+                println!("DEBUG: Pass1: First sound received. Lazy loading model...");
                 let current_cfg = config::startup();
                 
                 let mut ctx_params = WhisperContextParameters::default();
                 ctx_params.use_gpu(current_cfg.use_gpu_fast);
                 ctx_params.gpu_device(current_cfg.gpu_device_fast);
 
-                let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-fast", "bin")
-                    .expect("No Whisper model found in models/whisper-fast");
+                let whisper_path = match crate::utils::find_first_file_in_dir("models/whisper-fast", "bin") {
+                    Some(path) => path,
+                    None => {
+                        println!("CRITICAL: Pass1: No model found in models/whisper-fast!");
+                        panic!("Pass1 missing model");
+                    }
+                };
 
-                let c = WhisperContext::new_with_params(&whisper_path, ctx_params)
-                    .expect("Pass1: error loading model");
+                println!("DEBUG: Pass1: Creating WhisperContext from {:?}", whisper_path);
                 
-                s = Some(c.create_state().expect("Pass1: state init failed"));
-                _ctx = Some(c); // Держим контекст живым
+                let c = match WhisperContext::new_with_params(&whisper_path, ctx_params) {
+                    Ok(ctx) => ctx,
+                    Err(e) => {
+                        println!("CRITICAL: Pass1: Context failed to load! Error: {:?}", e);
+                        panic!("Pass1 context error");
+                    }
+                };
+                
+                println!("DEBUG: Pass1: Context loaded. Creating state...");
+                
+                let state = match c.create_state() {
+                    Ok(st) => st,
+                    Err(e) => {
+                        println!("CRITICAL: Pass1: State init failed! Error: {:?}", e);
+                        panic!("Pass1 state error");
+                    }
+                };
+
+                s = Some(state);
+                _ctx = Some(c); 
+                println!("DEBUG: Pass1: Fully initialized and ready!");
             }
             let mut state = s.as_mut().unwrap();
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
@@ -154,21 +177,35 @@ pub async fn pass2_task(
 
         for job in job_rx {
             if s.is_none() {
-                tracing::info!("Pass2: Lazy loading model with current config...");
+                println!("DEBUG: Pass2: First sound received. Lazy loading model...");
                 let current_cfg = config::startup();
 
                 let mut ctx_params = WhisperContextParameters::default();
                 ctx_params.use_gpu(current_cfg.use_gpu_acc);
                 ctx_params.gpu_device(current_cfg.gpu_device_acc);
 
-                let whisper_path = crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin")
-                    .expect("No Whisper model found in models/whisper-accurate");
+                let whisper_path = match crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin") {
+                    Some(path) => path,
+                    None => {
+                        println!("CRITICAL: Pass2: No model found in models/whisper-accurate!");
+                        panic!("Pass2 missing model");
+                    }
+                };
                 
+                println!("DEBUG: Pass2: Creating WhisperContext from {:?}", whisper_path);
                 let c = WhisperContext::new_with_params(&whisper_path, ctx_params)
-                    .expect("Pass2: error loading model");
+                    .unwrap_or_else(|e| {
+                        println!("CRITICAL: Pass2: Context failed to load! Error: {:?}", e);
+                        panic!("Pass2 context error");
+                    });
                 
-                s = Some(c.create_state().expect("Pass2: state init failed"));
+                println!("DEBUG: Pass2: Context loaded. Creating state...");
+                s = Some(c.create_state().unwrap_or_else(|e| {
+                    println!("CRITICAL: Pass2: State init failed! Error: {:?}", e);
+                    panic!("Pass2 state error");
+                }));
                 _ctx = Some(c);
+                println!("DEBUG: Pass2: Fully initialized and ready!");
             }
             let mut state = s.as_mut().unwrap();
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
@@ -268,15 +305,17 @@ pub async fn pass2_task(
 }
 
 pub fn disable_whisper_log() {
-    return;
-    //unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
+    unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 
-// unsafe extern "C" fn whisper_log_callback(
-//     _level: u32,
-//     _msg: *const std::os::raw::c_char,
-//     _user_data: *mut c_void,
-// ) {}
+unsafe extern "C" fn whisper_log_callback(
+    #[cfg(target_os = "windows")]
+    _level: i32,
+    #[cfg(target_os = "linux")]
+    _level: u32,
+    _msg: *const std::os::raw::c_char,
+    _user_data: *mut std::ffi::c_void,
+) {}
 
 pub struct StreamInfo {
     current_id: Option<u32>,

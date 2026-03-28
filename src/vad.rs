@@ -33,14 +33,22 @@ pub struct VadEngine {
 
 impl VadEngine {
     pub fn new(model_path: &Path) -> Self {
-        let model = Session::builder()
+        println!("DEBUG: VAD: Starting builder...");
+        let builder = Session::builder();
+
+        println!("DEBUG: VAD: Loading file: {:?}", model_path);
+        let model = builder
             .expect("Failed to create ONNX session builder")
             .with_intra_threads(1)
             .expect("Failed intra")
             .with_inter_threads(1)
             .expect("Failed inter")
             .commit_from_file(model_path)
-            .expect(&format!("Failed to load VAD model from {:?}", model_path));
+            .unwrap_or_else(|e| {
+                println!("CRITICAL VAD ERROR: {:?}", e);
+                panic!("VAD failed");
+            });
+        println!("DEBUG: VAD: Session created!");
 
         let h = Array3::<f32>::zeros((2, 1, 64));
         let c = Array3::<f32>::zeros((2, 1, 64));
