@@ -1,3 +1,8 @@
+///TODO:
+/// SCROLLABLE STARTUP WINDOW
+
+
+
 use std::{collections::BTreeMap, sync::Arc};
 use std::collections::{HashMap, HashSet};
 
@@ -49,6 +54,25 @@ fn init_logging() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     tracing::info!("Logger initialized");
+
+    let _cleanup_guard = audio::LinuxCleanupGuard;
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        #[cfg(target_os = "linux")]
+        audio::cleanup_linux_virtual_sink();
+        default_panic(info);
+    }));
+
+    #[cfg(target_os = "linux")]
+    {
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                tracing::info!("Shutdown signal received...");
+                audio::cleanup_linux_virtual_sink();
+                std::process::exit(0);
+            }
+        });
+    }
 
     config::load_from_toml("config.toml");
     tracing::info!("Config loaded: {:?}", config::startup());
@@ -121,7 +145,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rt.block_on(whisper::pass2_task(pass2_ready_tx, pass2_rx, event_tx));
         })?;
     pass2_ready_rx.await.expect("pass2 failed to start");
-
+    
+    #[cfg(target_os = "linux")]
+    audio::setup_linux_virtual_sink("Whisper Monitor");
+    
     //tokio::spawn(display_task::display_task(event_rx)); ----Terminal display, as of now disabled
 
     
@@ -721,6 +748,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        #[cfg(target_os = "linux")]
+        audio::cleanup_linux_virtual_sink();
         config::save_to_toml("config.toml");
     }
 }
