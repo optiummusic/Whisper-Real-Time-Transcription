@@ -23,7 +23,7 @@ pub async fn pass1_task(
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let mut stream = StreamInfo::new();
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass1Job>(3);
+    let (job_tx, mut job_rx) = tokio::sync::mpsc::channel::<Pass1Job>(3);
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
  
     std::thread::spawn(move || {
@@ -32,7 +32,7 @@ pub async fn pass1_task(
         
         ready_tx.send(()).ok();
  
-        for job in job_rx {
+        while let Some(job) = job_rx.blocking_recv() {
             if s.is_none() {
                 tracing::info!("Pass1: Lazy loading model with current config...");
                 let current_cfg = config::startup();
@@ -124,8 +124,10 @@ pub async fn pass1_task(
                 if let Some(job) = stream.process_incoming(chunk, &mut rx) {
                     if let Err(e) = job_tx.try_send(job) {
                         match e {
-                            TrySendError::Full(_) => debug!("Pass1 Worker busy, skipping chunk"),
-                            TrySendError::Disconnected(_) => {
+                            mpsc::error::TrySendError::Full(_) => {
+                                debug!("Pass1 Worker busy, dropping newest chunk");
+                            }
+                            mpsc::error::TrySendError::Closed(_) => {
                                 error!("Worker thread died! Shutting down async task.");
                                 break;
                             }
@@ -142,7 +144,7 @@ pub async fn pass2_task(
     mut rx:   mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(4);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(12);
     let (res_tx, mut res_rx) = mpsc::channel::<TranscriptEvent>(8);
  
     std::thread::spawn(move || {

@@ -1,8 +1,3 @@
-///TODO:
-/// SCROLLABLE STARTUP WINDOW
-
-
-
 use std::{collections::BTreeMap, sync::Arc};
 use std::collections::{HashMap, HashSet};
 
@@ -163,7 +158,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([600.0, 400.0])
-            .with_title("Arch Translator"),
+            .with_min_inner_size([600.0, 700.0])
+            .with_title("Live ASR to Translation"),
         ..Default::default()
     };
     let handle = Handle::current();
@@ -171,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "translator_ui",
         native_options,
         Box::new(|_cc| {
-            _cc.egui_ctx.set_zoom_factor(1.5);
+            _cc.egui_ctx.set_zoom_factor(1.25);
             Ok(Box::new(App::new(
                 event_rx_ui,
                 translation_rx,
@@ -371,7 +367,9 @@ impl App {
             self.last_selected = self.selected_device.clone();
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
+            egui::ScrollArea::both()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
                 ui.add_space(20.0);
                 ui.heading("Translator Setup");
                 ui.add_space(20.0);
