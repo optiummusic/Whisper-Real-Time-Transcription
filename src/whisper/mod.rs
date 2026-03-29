@@ -305,10 +305,12 @@ pub async fn pass2_task(
 }
 
 pub fn disable_whisper_log() {
+    return;
     unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 
 unsafe extern "C" fn whisper_log_callback(
+    // For some reason compilation for windows breaks if level value is unsigned, and it asks for integer.
     #[cfg(target_os = "windows")]
     _level: i32,
     #[cfg(target_os = "linux")]
