@@ -1,12 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tokio::sync::mpsc;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
-use translator::{types::PhraseChunk};
+use translator::types::PhraseChunk;
 use translator::whisper::whisper::StreamInfo;
 fn bench_process_incoming(c: &mut Criterion) {
     let mut stream = StreamInfo::new();
-    
+
     let (_tx, mut rx) = mpsc::channel(100);
 
     let chunk = PhraseChunk {
@@ -18,9 +18,7 @@ fn bench_process_incoming(c: &mut Criterion) {
     };
 
     c.bench_function("stream_process_10ms_chunk", |b| {
-        b.iter(|| {
-            stream.process_incoming(black_box(chunk.clone()), &mut rx)
-        })
+        b.iter(|| stream.process_incoming(black_box(chunk.clone()), &mut rx))
     });
 }
 

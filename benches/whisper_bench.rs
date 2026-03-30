@@ -1,7 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use whisper_rs::{WhisperContext, WhisperContextParameters};
-use translator::whisper::engine::{run_whisper, WhisperConfig};
+use criterion::{Criterion, criterion_group, criterion_main};
 use translator::utility::utils::find_first_file_in_dir;
+use translator::whisper::engine::{WhisperConfig, run_whisper};
+use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 fn bench_whisper_passes(c: &mut Criterion) {
     let audio_bytes = include_bytes!("test_audio.raw");
@@ -9,7 +9,7 @@ fn bench_whisper_passes(c: &mut Criterion) {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
-    
+
     let duration_s = audio_data.len() as f32 / 16000.0;
 
     let fast_path = find_first_file_in_dir("models/whisper-fast", "bin")
@@ -26,9 +26,9 @@ fn bench_whisper_passes(c: &mut Criterion) {
     let mut state_acc = ctx_acc.create_state().unwrap();
 
     let mut group = c.benchmark_group("Whisper_Inference");
-    
+
     group.throughput(criterion::Throughput::Elements(audio_data.len() as u64));
-    group.sample_size(10); 
+    group.sample_size(10);
 
     group.bench_function(format!("pass1_fast_{:.1}s", duration_s), |b| {
         b.iter_custom(|iters| {
@@ -47,7 +47,11 @@ fn bench_whisper_passes(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let start = std::time::Instant::now();
             for _ in 0..iters {
-                run_whisper(&mut state_acc, &audio_data, &WhisperConfig::accurate("Testing context performance."));
+                run_whisper(
+                    &mut state_acc,
+                    &audio_data,
+                    &WhisperConfig::accurate("Testing context performance."),
+                );
             }
             let elapsed = start.elapsed();
             let rtf = elapsed.as_secs_f32() / (iters as f32 * duration_s);

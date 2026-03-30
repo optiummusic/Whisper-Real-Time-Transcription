@@ -1,44 +1,42 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TrySendError;
-use std::sync::Arc;
-use std::collections::{ HashMap };
-use tokio::sync::{ mpsc, oneshot };
-use tracing::{debug, error, info, trace };
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, info, trace};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
 use crate::utility::{
-    utils::{ append_context, dump_audio_to_file, find_first_file_in_dir},
     stats,
+    utils::{append_context, dump_audio_to_file, find_first_file_in_dir},
 };
-use crate::whisper::engine::{run_whisper, WhisperConfig};
-use crate::{Pass1Job, Pass2Job, Pass1Result};
+use crate::whisper::engine::{WhisperConfig, run_whisper};
+use crate::{Pass1Job, Pass1Result, Pass2Job};
 
-use crate::config::{
-    TARGET_SAMPLE_RATE, STREAM_CHUNK_SAMPLES, PASS1_MIN_SAMPLES
-};
 use crate::config;
+use crate::config::{PASS1_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE};
 
 pub async fn pass1_task(
     ready_tx: oneshot::Sender<()>,
-    mut rx:   mpsc::Receiver<PhraseChunk>,
+    mut rx: mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let mut stream = StreamInfo::new();
     let (job_tx, mut job_rx) = tokio::sync::mpsc::channel::<Pass1Job>(3);
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
- 
+
     std::thread::spawn(move || {
         let mut s: Option<whisper_rs::WhisperState> = None;
         let mut _ctx: Option<WhisperContext> = None;
-        
+
         ready_tx.send(()).ok();
- 
+
         while let Some(job) = job_rx.blocking_recv() {
             if s.is_none() {
                 println!("DEBUG: Pass1: First sound received. Lazy loading model...");
                 let current_cfg = config::startup();
-                
+
                 let mut ctx_params = WhisperContextParameters::default();
                 ctx_params.use_gpu(current_cfg.use_gpu_fast);
                 ctx_params.gpu_device(current_cfg.gpu_device_fast);
@@ -51,8 +49,11 @@ pub async fn pass1_task(
                     }
                 };
 
-                println!("DEBUG: Pass1: Creating WhisperContext from {:?}", whisper_path);
-                
+                println!(
+                    "DEBUG: Pass1: Creating WhisperContext from {:?}",
+                    whisper_path
+                );
+
                 let c = match WhisperContext::new_with_params(&whisper_path, ctx_params) {
                     Ok(ctx) => ctx,
                     Err(e) => {
@@ -60,9 +61,9 @@ pub async fn pass1_task(
                         panic!("Pass1 context error");
                     }
                 };
-                
+
                 println!("DEBUG: Pass1: Context loaded. Creating state...");
-                
+
                 let state = match c.create_state() {
                     Ok(st) => st,
                     Err(e) => {
@@ -72,17 +73,17 @@ pub async fn pass1_task(
                 };
 
                 s = Some(state);
-                _ctx = Some(c); 
+                _ctx = Some(c);
                 println!("DEBUG: Pass1: Fully initialized and ready!");
             }
-            let mut state = s.as_mut().unwrap();
+            let state = s.as_mut().unwrap();
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
 
             let debug_filename = format!("p1_debug_{}_{}.wav", job.phrase_id, job.chunk_id);
             dump_audio_to_file(&job.audio, &debug_filename);
-            
-            let (text, _) = run_whisper(&mut state, &job.audio, &WhisperConfig::fast());
+
+            let (text, _) = run_whisper(state, &job.audio, &WhisperConfig::fast());
             let elapsed = t0.elapsed();
             let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
             tracing::info!(
@@ -97,22 +98,24 @@ pub async fn pass1_task(
             if job.is_last {
                 stats::get().record_pass1_done(job.phrase_id, rtf, duration_s, text.len());
             }
-            if !text.is_empty() {
-                if res_tx.blocking_send(Pass1Result {
+            if !text.is_empty()
+                && res_tx
+                    .blocking_send(Pass1Result {
                         phrase_id: job.phrase_id,
-                        chunk_id:  job.chunk_id,
+                        chunk_id: job.chunk_id,
                         text,
-                        short:      job.short,
-                        is_last:    job.is_last,
+                        short: job.short,
+                        is_last: job.is_last,
                         duration_s,
                         rtf,
-                    }).is_err() {
+                    })
+                    .is_err()
+                {
                     break;
                 }
-            }
         }
     });
-     
+
     loop {
         tokio::select! {
             biased;
@@ -174,12 +177,12 @@ pub async fn pass1_task(
 
 pub async fn pass2_task(
     ready_tx: oneshot::Sender<()>,
-    mut rx:   mpsc::Receiver<PhraseChunk>,
+    mut rx: mpsc::Receiver<PhraseChunk>,
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<Pass2Job>(12);
     let (res_tx, mut res_rx) = mpsc::channel::<TranscriptEvent>(8);
- 
+
     std::thread::spawn(move || {
         let mut s: Option<whisper_rs::WhisperState> = None;
         let mut _ctx: Option<WhisperContext> = None;
@@ -201,14 +204,18 @@ pub async fn pass2_task(
                         panic!("Pass2 missing model");
                     }
                 };
-                
-                println!("DEBUG: Pass2: Creating WhisperContext from {:?}", whisper_path);
-                let c = WhisperContext::new_with_params(&whisper_path, ctx_params)
-                    .unwrap_or_else(|e| {
+
+                println!(
+                    "DEBUG: Pass2: Creating WhisperContext from {:?}",
+                    whisper_path
+                );
+                let c = WhisperContext::new_with_params(&whisper_path, ctx_params).unwrap_or_else(
+                    |e| {
                         println!("CRITICAL: Pass2: Context failed to load! Error: {:?}", e);
                         panic!("Pass2 context error");
-                    });
-                
+                    },
+                );
+
                 println!("DEBUG: Pass2: Context loaded. Creating state...");
                 s = Some(c.create_state().unwrap_or_else(|e| {
                     println!("CRITICAL: Pass2: State init failed! Error: {:?}", e);
@@ -217,17 +224,21 @@ pub async fn pass2_task(
                 _ctx = Some(c);
                 println!("DEBUG: Pass2: Fully initialized and ready!");
             }
-            let mut state = s.as_mut().unwrap();
+            let state = s.as_mut().unwrap();
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
 
             let debug_filename = format!("pass2_debug_phrase_{}.wav", job.phrase_id);
             dump_audio_to_file(&job.audio, &debug_filename);
- 
-            let (text, _) = run_whisper(&mut state, &job.audio, &WhisperConfig::accurate(&*job.context));
- 
+
+            let (text, _) = run_whisper(
+                state,
+                &job.audio,
+                &WhisperConfig::accurate(&job.context),
+            );
+
             let dur_ms = t0.elapsed().as_millis();
-            let rtf    = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
+            let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
             tracing::info!(
                 target: "PERFORMANCE",
                 pid = job.phrase_id,
@@ -238,22 +249,24 @@ pub async fn pass2_task(
                 "Inference finished"
             );
             stats::get().record_pass2_done(job.phrase_id, rtf, text.len());
- 
+
             let event = TranscriptEvent::Final {
-                phrase_id:  job.phrase_id,
-                text:       text.trim().to_string(),
+                phrase_id: job.phrase_id,
+                text: text.trim().to_string(),
                 duration_s,
                 rtf,
                 sent_at: std::time::Instant::now(),
             };
-            if res_tx.blocking_send(event).is_err() { break; }
+            if res_tx.blocking_send(event).is_err() {
+                break;
+            }
         }
     });
     let mut phrases: HashMap<u32, Vec<f32>> = HashMap::new();
     let mut last_context: Arc<String> = Arc::new(String::new());
- 
+
     loop {
-        tokio::select! { 
+        tokio::select! {
             biased;
             Some(event) = res_rx.recv() => {
                 let pid = match &event {
@@ -279,13 +292,13 @@ pub async fn pass2_task(
 
             maybe_chunk = rx.recv() => {
                 let Some(chunk) = maybe_chunk else { break };
- 
+
                 debug!(pid = chunk.phrase_id, cid = chunk.chunk_id,
                        len = chunk.data.len(), is_last = chunk.is_last, "pass2 got chunk");
- 
+
                 let acc = phrases.entry(chunk.phrase_id)
                     .or_insert_with(|| Vec::with_capacity(STREAM_CHUNK_SAMPLES * 8));
- 
+
                 if !chunk.data.is_empty() {
                     acc.extend_from_slice(&chunk.data);
                 }
@@ -317,8 +330,8 @@ pub async fn pass2_task(
                             }
                         }
                     }
-                } else { 
-                    continue; 
+                } else {
+                    continue;
                 }
             }
         }
@@ -347,21 +360,32 @@ pub struct StreamInfo {
     buffer: Vec<f32>,
 }
 
+impl Default for StreamInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamInfo {
     pub fn new() -> Self {
         Self {
             current_id: None,
             closed_id: None,
-            buffer: Vec::with_capacity(STREAM_CHUNK_SAMPLES * 16)
+            buffer: Vec::with_capacity(STREAM_CHUNK_SAMPLES * 16),
         }
     }
 
-    pub fn process_incoming(&mut self, mut chunk: PhraseChunk, rx: &mut mpsc::Receiver<PhraseChunk>) -> Option<Pass1Job> {
+    pub fn process_incoming(
+        &mut self,
+        mut chunk: PhraseChunk,
+        rx: &mut mpsc::Receiver<PhraseChunk>,
+    ) -> Option<Pass1Job> {
         let mut drained = 0;
         while drained < 8 {
             match rx.try_recv() {
                 Ok(next) => {
-                    if next.phrase_id > chunk.phrase_id && Some(chunk.phrase_id) == self.current_id {
+                    if next.phrase_id > chunk.phrase_id && Some(chunk.phrase_id) == self.current_id
+                    {
                         debug!("Drained");
                         self.reset(next.phrase_id);
                     }
@@ -372,11 +396,10 @@ impl StreamInfo {
             }
         }
 
-        if let Some(cur) = self.current_id {
-            if chunk.phrase_id < cur {
+        if let Some(cur) = self.current_id
+            && chunk.phrase_id < cur {
                 return None;
             }
-        }
         if Some(chunk.phrase_id) != self.current_id {
             self.reset(chunk.phrase_id);
         }
@@ -399,12 +422,19 @@ impl StreamInfo {
         is_last: bool,
         single_pass: bool,
     ) -> bool {
-        if short { return true; }
-        if is_last && single_pass { return true; }
-        if Some(phrase_id) == self.closed_id { return false; }
-        if let Some(cur) = self.current_id {
-            if phrase_id < cur { return false; }
+        if short {
+            return true;
         }
+        if is_last && single_pass {
+            return true;
+        }
+        if Some(phrase_id) == self.closed_id {
+            return false;
+        }
+        if let Some(cur) = self.current_id
+            && phrase_id < cur {
+                return false;
+            }
         true
     }
     fn reset(&mut self, new_id: u32) {
@@ -412,33 +442,44 @@ impl StreamInfo {
         self.current_id = Some(new_id);
         self.closed_id = None;
     }
-    
+
     fn make_job(&mut self, chunk: &PhraseChunk) -> Option<Pass1Job> {
         let len = self.buffer.len();
         if len < PASS1_MIN_SAMPLES && !chunk.is_last {
-            info!("{} chunk is less than {}, {}", chunk.chunk_id, PASS1_MIN_SAMPLES, chunk.data.len());
+            info!(
+                "{} chunk is less than {}, {}",
+                chunk.chunk_id,
+                PASS1_MIN_SAMPLES,
+                chunk.data.len()
+            );
             return None;
         }
 
-        let window = if chunk.is_last { config::max_window() } else { config::min_window() };
+        let window = if chunk.is_last {
+            config::max_window()
+        } else {
+            config::min_window()
+        };
 
-        let audio  = if len > window {
+        let audio = if len > window {
             self.buffer[len - window..].to_vec()
         } else {
             self.buffer.to_vec()
         };
 
         let phrase_id = chunk.phrase_id;
-        let chunk_id  = chunk.chunk_id;
+        let chunk_id = chunk.chunk_id;
 
-        if chunk.is_last { self.buffer.clear(); }
+        if chunk.is_last {
+            self.buffer.clear();
+        }
         trace!("[MAKE JOB]{} phrase, {} chunk is sent", phrase_id, chunk_id);
-        Some(Pass1Job { 
-            phrase_id, 
-            chunk_id, 
-            short: 
-            chunk.short, 
+        Some(Pass1Job {
+            phrase_id,
+            chunk_id,
+            short: chunk.short,
             is_last: chunk.is_last,
-            audio })
+            audio,
+        })
     }
 }

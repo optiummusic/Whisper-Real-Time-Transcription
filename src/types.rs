@@ -1,23 +1,33 @@
 use std::sync::Arc;
 pub type AudioPacket = Vec<f32>;
 use std::collections::HashMap;
-use tokio::sync::{Notify, Mutex};
-
+use tokio::sync::{Mutex, Notify};
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEvent {
-    Partial { phrase_id: u32, chunk_id: u32, text: String, sent_at: std::time::Instant },
-    Final   { phrase_id: u32, text: String, duration_s: f32, rtf: f32, sent_at: std::time::Instant },
+    Partial {
+        phrase_id: u32,
+        chunk_id: u32,
+        text: String,
+        sent_at: std::time::Instant,
+    },
+    Final {
+        phrase_id: u32,
+        text: String,
+        duration_s: f32,
+        rtf: f32,
+        sent_at: std::time::Instant,
+    },
 }
 
 #[derive(Clone)]
 pub enum TranslationEvent {
-    Translate { 
+    Translate {
         phrase_id: u32,
         word_index: usize,
-        span: usize, 
+        span: usize,
         text: String,
-    }
+    },
 }
 
 pub struct TranslationBuffer {
@@ -26,12 +36,17 @@ pub struct TranslationBuffer {
 
 impl TranslationBuffer {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { notifiers: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            notifiers: Mutex::new(HashMap::new()),
+        })
     }
 
     pub async fn register(&self, phrase_id: u32) -> Arc<Notify> {
         let notify = Arc::new(Notify::new());
-        self.notifiers.lock().await.insert(phrase_id, Arc::clone(&notify));
+        self.notifiers
+            .lock()
+            .await
+            .insert(phrase_id, Arc::clone(&notify));
         notify
     }
 
@@ -45,8 +60,8 @@ impl TranslationBuffer {
 #[derive(Clone)]
 pub struct PhraseChunk {
     pub phrase_id: u32,
-    pub chunk_id:  u32,
-    pub is_last:   bool,
+    pub chunk_id: u32,
+    pub is_last: bool,
     pub short: bool,
-    pub data:      Arc<Vec<f32>>,
+    pub data: Arc<Vec<f32>>,
 }

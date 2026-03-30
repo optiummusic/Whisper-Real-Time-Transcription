@@ -1,17 +1,21 @@
-use std::collections::VecDeque;
-use std::path::{ Path, PathBuf };
-use std::fs;
-use std::sync::OnceLock;
 use crate::config;
-use tokio::sync::{ mpsc };
+use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
-    if text.is_empty() { return; }
- 
-    if !ctx.is_empty() { ctx.push(' '); }
+    if text.is_empty() {
+        return;
+    }
+
+    if !ctx.is_empty() {
+        ctx.push(' ');
+    }
     ctx.push_str(text.trim());
- 
+
     let words: Vec<&str> = ctx.split_whitespace().collect();
     if words.len() > max_words {
         *ctx = words[words.len() - max_words..].join(" ");
@@ -19,17 +23,21 @@ pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
 }
 
 pub fn merge_strings(old: &str, new: &str) -> String {
-    if old.is_empty() { return new.to_string(); }
-    if new.is_empty() { return old.to_string(); }
- 
+    if old.is_empty() {
+        return new.to_string();
+    }
+    if new.is_empty() {
+        return old.to_string();
+    }
+
     // Fast path: new literally contains the whole old string.
     if new.to_lowercase().contains(&old.trim().to_lowercase()) {
         return new.to_string();
     }
- 
+
     let old_words: Vec<&str> = old.split_whitespace().collect();
     let new_words: Vec<&str> = new.split_whitespace().collect();
- 
+
     // Normalise a word for overlap comparison: lowercase + strip non-alphanumeric
     let norm = |w: &str| -> String {
         w.chars()
@@ -37,30 +45,30 @@ pub fn merge_strings(old: &str, new: &str) -> String {
             .collect::<String>()
             .to_lowercase()
     };
- 
+
     let old_norm: Vec<String> = old_words.iter().map(|w| norm(w)).collect();
     let new_norm: Vec<String> = new_words.iter().map(|w| norm(w)).collect();
- 
+
     let max_overlap = old_norm.len().min(new_norm.len());
- 
+
     // Try longest overlap first.
     for overlap in (1..=max_overlap).rev() {
         let old_suffix = &old_norm[old_norm.len() - overlap..];
         let new_prefix = &new_norm[..overlap];
- 
+
         // Skip trivial single-word overlaps on very common words
         // (avoids spurious merges on filler like "the", "a", "i").
         if overlap == 1 && old_suffix[0].len() <= 2 {
             continue;
         }
- 
+
         if old_suffix == new_prefix {
             let mut result = old_words[..old_words.len() - overlap].to_vec();
             result.extend_from_slice(&new_words);
             return result.join(" ");
         }
     }
- 
+
     // No clean overlap found.  Prefer whichever result contains more words.
     if new_words.len() >= old_words.len() {
         new.to_string()
@@ -71,37 +79,42 @@ pub fn merge_strings(old: &str, new: &str) -> String {
 }
 
 pub fn models_are_identical() -> bool {
-    let fast = find_first_file_in_dir("models/whisper-fast",    "bin");
-    let acc  = find_first_file_in_dir("models/whisper-accurate", "bin");
- 
-    let (Some(fast_path), Some(acc_path)) = (fast, acc) else { return false; };
- 
+    let fast = find_first_file_in_dir("models/whisper-fast", "bin");
+    let acc = find_first_file_in_dir("models/whisper-accurate", "bin");
+
+    let (Some(fast_path), Some(acc_path)) = (fast, acc) else {
+        return false;
+    };
+
     if fast_path == acc_path {
         tracing::info!("Model identity check: same path → single-pass mode");
         return true;
     }
- 
+
     let fast_size = fs::metadata(&fast_path).map(|m| m.len()).unwrap_or(0);
-    let acc_size  = fs::metadata(&acc_path) .map(|m| m.len()).unwrap_or(0);
- 
+    let acc_size = fs::metadata(&acc_path).map(|m| m.len()).unwrap_or(0);
+
     if fast_size == 0 || fast_size != acc_size {
-        tracing::info!("Model identity check: different sizes ({} vs {}) → two-pass mode",
-                        fast_size, acc_size);
+        tracing::info!(
+            "Model identity check: different sizes ({} vs {}) → two-pass mode",
+            fast_size,
+            acc_size
+        );
         return false;
     }
- 
+
     use std::io::Read;
     const SAMPLE: usize = 8192;
     let mut buf_f = [0u8; SAMPLE];
     let mut buf_a = [0u8; SAMPLE];
- 
+
     let n_f = fs::File::open(&fast_path)
         .and_then(|mut f| f.read(&mut buf_f))
         .unwrap_or(0);
     let n_a = fs::File::open(&acc_path)
         .and_then(|mut f| f.read(&mut buf_a))
         .unwrap_or(0);
- 
+
     let identical = n_f == n_a && buf_f[..n_f] == buf_a[..n_a];
     tracing::info!(
         "Model identity check: header comparison → {} (same_size={}, same_bytes={})",
@@ -117,11 +130,15 @@ pub fn get_model_path(relative_path: &str) -> PathBuf {
     let exe_dir = exe_path.parent().expect("Failed to get exe parent");
 
     let path_near_exe = exe_dir.join(relative_path);
-    if path_near_exe.exists() { return path_near_exe; }
+    if path_near_exe.exists() {
+        return path_near_exe;
+    }
 
     if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()) {
         let path_in_root = project_root.join(relative_path);
-        if path_in_root.exists() { return path_in_root; }
+        if path_in_root.exists() {
+            return path_in_root;
+        }
     }
 
     PathBuf::from(relative_path)
@@ -129,7 +146,7 @@ pub fn get_model_path(relative_path: &str) -> PathBuf {
 
 pub fn find_first_file_in_dir(relative_dir: &str, extension: &str) -> Option<PathBuf> {
     let dir_path = get_model_path(relative_dir);
-    
+
     if let Ok(entries) = fs::read_dir(dir_path) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -142,13 +159,15 @@ pub fn find_first_file_in_dir(relative_dir: &str, extension: &str) -> Option<Pat
 }
 
 pub fn prepare_debug_dir() {
-    if !config::dump_audio() { return; }
+    if !config::dump_audio() {
+        return;
+    }
     let dir = "debug_audio";
-    
+
     if Path::new(dir).exists() {
         let _ = fs::remove_dir_all(dir);
     }
-    
+
     let _ = fs::create_dir_all(dir);
 }
 
@@ -183,11 +202,10 @@ pub fn init_audio_dumper() {
             let file_path_str = file_path.to_string_lossy().into_owned();
 
             history.retain(|x| x != &file_path_str);
-            if history.len() >= MAX_DUMP_FILES {
-                if let Some(old_file) = history.pop_front() {
+            if history.len() >= MAX_DUMP_FILES
+                && let Some(old_file) = history.pop_front() {
                     let _ = fs::remove_file(old_file);
                 }
-            }
             history.push_back(file_path_str.clone());
 
             let spec = hound::WavSpec {
@@ -204,14 +222,17 @@ pub fn init_audio_dumper() {
                     }
                     let _ = writer.finalize();
                 }
-            }).await;
+            })
+            .await;
         }
     });
 }
 
 pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
-    if !config::dump_audio() { return; }
-    
+    if !config::dump_audio() {
+        return;
+    }
+
     if let Some(tx) = DUMP_TX.get() {
         let _ = tx.send(DumpRequest {
             samples: samples.to_vec(),
@@ -221,13 +242,16 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
 }
 
 pub async fn recording_task(
-    mut rx: mpsc::Receiver<String>, 
-    path: String, 
-    should_save: std::sync::Arc<std::sync::atomic::AtomicBool>
+    mut rx: mpsc::Receiver<String>,
+    path: String,
+    should_save: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let _ = tokio::fs::create_dir_all("transcriptions").await;
     let mut file = tokio::fs::OpenOptions::new()
-        .create(true).append(true).open(&path).await
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
         .expect("Failed to open transcription file");
 
     let mut count = 0;
@@ -235,8 +259,10 @@ pub async fn recording_task(
         if should_save.load(std::sync::atomic::Ordering::Relaxed) {
             count += 1;
             let suffix = if count % 4 == 0 { ".\n" } else { " " };
-            let _ = file.write_all(format!("{}{}", text, suffix).as_bytes()).await;
-            let _ = file.flush().await; 
+            let _ = file
+                .write_all(format!("{}{}", text, suffix).as_bytes())
+                .await;
+            let _ = file.flush().await;
         }
     }
 }
@@ -248,13 +274,13 @@ pub fn add_to_custom_dict(word: &str, translation: &str) {
 
     let content = std::fs::read_to_string(&custom_path).unwrap_or_else(|_| "[rules]\n".to_string());
     let mut new_content = content.trim_end().to_string();
-    
+
     if !new_content.contains("[rules]") {
         new_content.push_str("\n[rules]");
     }
-    
+
     new_content.push_str(&format!("\n\"{}\" = \"{}\"\n", word, translation));
-    
+
     if let Err(e) = std::fs::write(&custom_path, new_content) {
         tracing::error!("Failed to write to custom dict: {}", e);
     } else {
@@ -265,7 +291,7 @@ pub fn add_to_custom_dict(word: &str, translation: &str) {
 pub enum TestState {
     Idle,
     Running(std::sync::mpsc::Receiver<Result<String, String>>),
-    Done(Result<String, String>)
+    Done(Result<String, String>),
 }
 
 pub enum ModelType {
@@ -293,7 +319,7 @@ impl ModelInfo {
                         .unwrap_or_else(|| get_model_path(dir).join("silero_vad.onnx")),
                     size_str: "~2 MB",
                 }
-            },
+            }
             ModelType::WFast => {
                 let dir = "models/whisper-fast";
                 Self {
@@ -303,7 +329,7 @@ impl ModelInfo {
                         .unwrap_or_else(|| get_model_path(dir).join("ggml-tiny-q8_0.bin")),
                     size_str: "~43 MB",
                 }
-            },
+            }
             ModelType::WAcc => {
                 let dir = "models/whisper-accurate";
                 Self {
@@ -313,7 +339,7 @@ impl ModelInfo {
                         .unwrap_or_else(|| get_model_path(dir).join("ggml-small-q5_1.bin")),
                     size_str: "~190 MB",
                 }
-            },
+            }
         }
     }
 }
@@ -324,15 +350,14 @@ pub fn start_test() -> std::sync::mpsc::Receiver<Result<String, String>> {
     std::thread::Builder::new()
         .name("pipeline-test".into())
         .spawn(move || {
-            let result = std::panic::catch_unwind(|| {
-                run_test_inner()
-            });
+            let result = std::panic::catch_unwind(run_test_inner);
 
             let final_result = match result {
-                Ok(Ok(text))  => Ok(text),
-                Ok(Err(e))    => Err(e),
-                Err(panic)    => {
-                    let msg = panic.downcast_ref::<String>()
+                Ok(Ok(text)) => Ok(text),
+                Ok(Err(e)) => Err(e),
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<String>()
                         .cloned()
                         .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
                         .unwrap_or_else(|| "Unknown panic".to_string());
@@ -352,11 +377,10 @@ fn run_test_inner() -> Result<String, String> {
     static TEST_WAV: &[u8] = include_bytes!("./assets/test.wav");
     let samples = decode_wav(TEST_WAV)?;
 
-    let vad_path = find_first_file_in_dir("models/vad", "onnx")
-        .ok_or("VAD model not found")?;
+    let vad_path = find_first_file_in_dir("models/vad", "onnx").ok_or("VAD model not found")?;
     let mut vad = crate::vad::VadEngine::new(&vad_path);
     let mut chunks: Vec<crate::types::PhraseChunk> = Vec::new();
-    
+
     for window in samples.chunks(crate::config::VAD_CHUNK_SIZE) {
         if window.len() == crate::config::VAD_CHUNK_SIZE {
             vad.process(window.to_vec(), &mut chunks);
@@ -374,8 +398,8 @@ fn run_test_inner() -> Result<String, String> {
 
     rt.block_on(async move {
         use crate::types::TranscriptEvent;
-        use tokio::sync::{mpsc, oneshot};
         use std::sync::Arc;
+        use tokio::sync::{mpsc, oneshot};
 
         let (pass1_tx, pass1_rx) = mpsc::channel(32);
         let (pass2_tx, pass2_rx) = mpsc::channel(32);
@@ -388,8 +412,12 @@ fn run_test_inner() -> Result<String, String> {
             .name("test-whisper-pass1".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all().build().unwrap();
-                rt.block_on(crate::whisper::whisper::pass1_task(ready_tx1, pass1_rx, event_tx1));
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(crate::whisper::whisper::pass1_task(
+                    ready_tx1, pass1_rx, event_tx1,
+                ));
             })
             .map_err(|e| format!("Failed to spawn pass1 thread: {}", e))?;
 
@@ -397,17 +425,27 @@ fn run_test_inner() -> Result<String, String> {
             .name("test-whisper-pass2".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all().build().unwrap();
-                rt.block_on(crate::whisper::whisper::pass2_task(ready_tx2, pass2_rx, event_tx2));
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(crate::whisper::whisper::pass2_task(
+                    ready_tx2, pass2_rx, event_tx2,
+                ));
             })
             .map_err(|e| format!("Failed to spawn pass2 thread: {}", e))?;
 
-        ready_rx1.await.map_err(|_| "pass1 failed to signal ready".to_string())?;
-        ready_rx2.await.map_err(|_| "pass2 failed to signal ready".to_string())?;
+        ready_rx1
+            .await
+            .map_err(|_| "pass1 failed to signal ready".to_string())?;
+        ready_rx2
+            .await
+            .map_err(|_| "pass2 failed to signal ready".to_string())?;
 
         for chunk in chunks {
             let is_last = chunk.is_last;
-            pass1_tx.send(chunk).await
+            pass1_tx
+                .send(chunk)
+                .await
                 .map_err(|_| "pass1 channel closed".to_string())?;
             if !is_last {
                 tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
@@ -416,20 +454,24 @@ fn run_test_inner() -> Result<String, String> {
 
         let pass1_timeout = tokio::time::Duration::from_secs(30);
         let pass1_text = match tokio::time::timeout(pass1_timeout, event_rx1.recv()).await {
-            Ok(Some(TranscriptEvent::Final { text, .. } |
-                    TranscriptEvent::Partial { text, .. })) => text,
+            Ok(Some(
+                TranscriptEvent::Final { text, .. } | TranscriptEvent::Partial { text, .. },
+            )) => text,
             _ => String::new(),
         };
 
         let full_audio = Arc::new(samples);
         let phrase_id = 0u32;
-        pass2_tx.send(crate::types::PhraseChunk {
-            phrase_id,
-            chunk_id: 0,
-            is_last: true,
-            short: false,
-            data: full_audio,
-        }).await.map_err(|_| "pass2 channel closed".to_string())?;
+        pass2_tx
+            .send(crate::types::PhraseChunk {
+                phrase_id,
+                chunk_id: 0,
+                is_last: true,
+                short: false,
+                data: full_audio,
+            })
+            .await
+            .map_err(|_| "pass2 channel closed".to_string())?;
 
         let pass2_timeout = tokio::time::Duration::from_secs(120);
         match tokio::time::timeout(pass2_timeout, event_rx2.recv()).await {
@@ -445,21 +487,20 @@ fn run_test_inner() -> Result<String, String> {
             }
             Ok(Some(TranscriptEvent::Partial { text, .. })) => Ok(format!("[partial] {}", text)),
             Ok(None) => Err("pass2 channel closed without result".into()),
-            Err(_)   => Err("pass2 timeout — accurate model took too long".into()),
+            Err(_) => Err("pass2 timeout — accurate model took too long".into()),
         }
     })
 }
 
 fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = std::io::Cursor::new(bytes);
-    let mut reader = hound::WavReader::new(cursor)
-        .map_err(|e| format!("WAV decode error: {}", e))?;
-    
+    let mut reader =
+        hound::WavReader::new(cursor).map_err(|e| format!("WAV decode error: {}", e))?;
+
     let samples: Vec<f32> = match reader.spec().sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
-        hound::SampleFormat::Int => reader.samples::<i16>()
+        hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect(),
+        hound::SampleFormat::Int => reader
+            .samples::<i16>()
             .map(|s| s.unwrap_or(0) as f32 / 32768.0)
             .collect(),
     };

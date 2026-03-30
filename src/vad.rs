@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use ndarray::{Array, Array3};
 use ort::{inputs, session::Session, value::TensorValueType, value::Value};
-use tokio::sync:: { oneshot, mpsc };
-use tracing::{warn};
+use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
 use crate::config::{
     self, STITCH_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE,
@@ -80,7 +80,10 @@ impl VadEngine {
     pub fn process(&mut self, audio_data: Vec<f32>, results: &mut Vec<PhraseChunk>) {
         let audio = Arc::new(audio_data);
         let Some(prob) = self.run_vad(audio.as_ref()) else {
-            tracing::warn!("VAD run_vad returned None! Check audio buffer size: {}", audio.len());
+            tracing::warn!(
+                "VAD run_vad returned None! Check audio buffer size: {}",
+                audio.len()
+            );
             return;
         };
         self.push_preroll(Arc::clone(&audio));
@@ -111,31 +114,42 @@ impl VadEngine {
                 results.push(self.flush_stitch());
             }
         }
-
-        return;
     }
 
     pub fn run_vad(&mut self, audio: &[f32]) -> Option<f32> {
         if audio.len() != VAD_CHUNK_SIZE {
-            tracing::error!("VAD: Wrong buffer size! Expected {}, got {}", VAD_CHUNK_SIZE, audio.len());
+            tracing::error!(
+                "VAD: Wrong buffer size! Expected {}, got {}",
+                VAD_CHUNK_SIZE,
+                audio.len()
+            );
             return None;
         }
-    
+
         self.input_buf.copy_from_slice(audio);
         let input_val = match Value::from_array(([1, VAD_CHUNK_SIZE], self.input_buf.clone())) {
             Ok(v) => v,
-            Err(e) => { tracing::error!("VAD: Failed to create input tensor: {:?}", e); return None; }
+            Err(e) => {
+                tracing::error!("VAD: Failed to create input tensor: {:?}", e);
+                return None;
+            }
         };
-    
+
         let h_val = match Value::from_array(self.h.clone()) {
             Ok(v) => v,
-            Err(e) => { tracing::error!("VAD: Failed to create H tensor: {:?}", e); return None; }
+            Err(e) => {
+                tracing::error!("VAD: Failed to create H tensor: {:?}", e);
+                return None;
+            }
         };
         let c_val = match Value::from_array(self.c.clone()) {
             Ok(v) => v,
-            Err(e) => { tracing::error!("VAD: Failed to create C tensor: {:?}", e); return None; }
+            Err(e) => {
+                tracing::error!("VAD: Failed to create C tensor: {:?}", e);
+                return None;
+            }
         };
-    
+
         let outputs = match self.model.run(inputs![
             "input" => &input_val,
             "sr"    => &self.sr,
@@ -143,25 +157,35 @@ impl VadEngine {
             "c"     => &c_val,
         ]) {
             Ok(v) => v,
-            Err(e) => { 
-                tracing::error!("VAD: Model run failed! Error: {:?}", e); 
-                return None; 
+            Err(e) => {
+                tracing::error!("VAD: Model run failed! Error: {:?}", e);
+                return None;
             }
         };
-    
+
         let prob_res = outputs["output"].try_extract_tensor::<f32>();
         let prob = match prob_res {
             Ok(view) => *view.1.first().unwrap_or(&0.0),
-            Err(e) => { tracing::error!("VAD: Failed to extract probability: {:?}", e); return None; }
+            Err(e) => {
+                tracing::error!("VAD: Failed to extract probability: {:?}", e);
+                return None;
+            }
         };
-    
-        if let (Ok(hn), Ok(cn)) = (outputs["hn"].try_extract_tensor::<f32>(), outputs["cn"].try_extract_tensor::<f32>()) {
-            if let Some(s) = self.h.as_slice_mut() { s.copy_from_slice(hn.1); }
-            if let Some(s) = self.c.as_slice_mut() { s.copy_from_slice(cn.1); }
+
+        if let (Ok(hn), Ok(cn)) = (
+            outputs["hn"].try_extract_tensor::<f32>(),
+            outputs["cn"].try_extract_tensor::<f32>(),
+        ) {
+            if let Some(s) = self.h.as_slice_mut() {
+                s.copy_from_slice(hn.1);
+            }
+            if let Some(s) = self.c.as_slice_mut() {
+                s.copy_from_slice(cn.1);
+            }
         } else {
             tracing::error!("VAD: Failed to extract hidden states (hn/cn)!");
         }
-    
+
         Some(prob)
     }
 
@@ -298,7 +322,7 @@ pub async fn vad_task(
     let mut results: Vec<PhraseChunk> = Vec::with_capacity(4);
     ready_tx.send(()).ok();
 
-    const MAX_METRICS: usize  = 100;
+    const MAX_METRICS: usize = 100;
     let mut metric_buffer: Vec<u128> = Vec::with_capacity(MAX_METRICS);
 
     while let Some(audio_data) = rx.recv().await {
@@ -315,9 +339,9 @@ pub async fn vad_task(
         if metric_buffer.len() >= MAX_METRICS {
             let sum: u128 = metric_buffer.iter().sum();
             let avg = sum as f32 / MAX_METRICS as f32;
-            
+
             crate::utility::utils::performance(avg, "vad_process_avg_100".to_string());
-            
+
             metric_buffer.clear();
         }
 
@@ -326,24 +350,36 @@ pub async fn vad_task(
         for chunk in results.drain(..) {
             let send_to_pass2 = (!chunk.short || !chunk.is_last) && !single_pass;
             let is_last = chunk.is_last;
-            let chunk_for_pass2 = if send_to_pass2 { Some(chunk.clone()) } else { None };
+            let chunk_for_pass2 = if send_to_pass2 {
+                Some(chunk.clone())
+            } else {
+                None
+            };
 
             if is_last {
-                if pass1_tx.send(chunk).await.is_err() { break; }
+                if pass1_tx.send(chunk).await.is_err() {
+                    break;
+                }
             } else {
                 if let Err(e) = pass1_tx.try_send(chunk) {
                     warn!("VAD->pass1 chunk dropped: {}", e);
-                    stats::get().vad_pass1_dropped.fetch_add(1, Ordering::Relaxed);
+                    stats::get()
+                        .vad_pass1_dropped
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             if let Some(c) = chunk_for_pass2 {
                 if is_last {
-                    if pass2_tx.send(c).await.is_err() { break; }
+                    if pass2_tx.send(c).await.is_err() {
+                        break;
+                    }
                 } else {
                     if let Err(e) = pass2_tx.try_send(c) {
                         warn!("VAD->pass2 chunk dropped: {}", e);
-                        stats::get().vad_pass2_dropped.fetch_add(1, Ordering::Relaxed);
+                        stats::get()
+                            .vad_pass2_dropped
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

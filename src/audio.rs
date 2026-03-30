@@ -1,26 +1,19 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
 use crate::types::AudioPacket;
-use tracing::{warn, info };
-use rubato::{
-    Async,
-    FixedAsync, 
-    SincInterpolationParameters, 
-    SincInterpolationType, 
-    WindowFunction,
-    Resampler,
-    Indexing
-};
 use audioadapter_buffers::direct::InterleavedSlice;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rubato::{
+    Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
+use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::process::Command;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
+use tracing::{info, warn};
 
-use crate::config::{
-    TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE
-};
+use crate::config::{TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE};
 
 static PEAK_LEVEL: AtomicU32 = AtomicU32::new(0);
 
@@ -37,7 +30,8 @@ static PREVIOUS_DEFAULT_SOURCE: Mutex<Option<String>> = Mutex::new(None);
 fn pa_get_default_source() -> Option<String> {
     let out = Command::new("pactl")
         .args(["get-default-source"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
 }
@@ -46,7 +40,8 @@ fn pa_get_default_source() -> Option<String> {
 fn pa_get_default_sink() -> Option<String> {
     let out = Command::new("pactl")
         .args(["get-default-sink"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
 }
@@ -83,30 +78,32 @@ fn find_device(device_name: &str) -> Option<cpal::Device> {
     #[cfg(target_os = "linux")]
     {
         let current = pa_get_default_source().unwrap_or_default();
-        if current.ends_with(".monitor") {
-            if let Ok(prev) = PREVIOUS_DEFAULT_SOURCE.lock() {
-                if let Some(name) = prev.as_ref() {
+        if current.ends_with(".monitor")
+            && let Ok(prev) = PREVIOUS_DEFAULT_SOURCE.lock()
+                && let Some(name) = prev.as_ref() {
                     info!("Switching back from monitor to: {}", name);
                     pa_set_default_source(name);
                     std::thread::sleep(std::time::Duration::from_millis(150));
                 }
-            }
-        }
     }
 
     #[cfg(target_os = "windows")]
     if device_name.ends_with(" [Loopback]") {
         let real_name = device_name.trim_end_matches(" [Loopback]");
-        return host.output_devices().ok()?
+        return host
+            .output_devices()
+            .ok()?
             .find(|d| d.name().map(|n| n == real_name).unwrap_or(false));
     }
 
     host.input_devices().ok()?.find(|d| {
-        d.name().map(|name| {
-            let n = name.to_lowercase();
-            let target = device_name.to_lowercase();
-            n == target || n.contains(&target)
-        }).unwrap_or(false)
+        d.name()
+            .map(|name| {
+                let n = name.to_lowercase();
+                let target = device_name.to_lowercase();
+                n == target || n.contains(&target)
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -119,12 +116,25 @@ pub fn get_input_devices() -> Vec<String> {
         for device in devices {
             if let Ok(name) = device.name() {
                 let n = name.to_lowercase();
-                
+
                 let trash_keywords = [
-                    "null", "oss", "lavrate", "upmix", "vdownmix",
-                    "usbstream", "hw:", "plughw:", "speex", "jack", 
-                    "dmix", "dsnoop", "front", "surround", "iec958",
-                    "default:", "samplerate"
+                    "null",
+                    "oss",
+                    "lavrate",
+                    "upmix",
+                    "vdownmix",
+                    "usbstream",
+                    "hw:",
+                    "plughw:",
+                    "speex",
+                    "jack",
+                    "dmix",
+                    "dsnoop",
+                    "front",
+                    "surround",
+                    "iec958",
+                    "default:",
+                    "samplerate",
                 ];
 
                 let is_trash = trash_keywords.iter().any(|&k| n.contains(k));
@@ -138,13 +148,16 @@ pub fn get_input_devices() -> Vec<String> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(out) = Command::new("pactl").args(["list", "sources", "short"]).output() {
+        if let Ok(out) = Command::new("pactl")
+            .args(["list", "sources", "short"])
+            .output()
+        {
             let text = String::from_utf8_lossy(&out.stdout);
             for line in text.lines() {
                 let cols: Vec<&str> = line.split_whitespace().collect();
                 if cols.len() >= 2 && cols[1].ends_with(".monitor") {
                     let raw = cols[1];
-                    
+
                     if raw.contains("Whisper") || !raw.contains("alsa_output") {
                         let display = raw.trim_end_matches(".monitor").replace('_', " ");
                         available_devices.push(format!("[Monitor] {display}"));
@@ -167,7 +180,7 @@ pub fn get_input_devices() -> Vec<String> {
 
     available_devices.sort();
     available_devices.dedup();
-    available_devices       
+    available_devices
 }
 
 fn make_resampler(source_rate: f64, chunk_size: usize) -> Async<f32> {
@@ -193,21 +206,26 @@ fn make_resampler(source_rate: f64, chunk_size: usize) -> Async<f32> {
 pub fn start_preview(device_name: &str) -> Option<cpal::Stream> {
     let device = find_device(device_name)?;
 
-    let config = device.default_input_config()
-        .or_else(|_| device.default_output_config()).ok()?;
-    
-    device.build_input_stream(
-        &config.into(),
-        |data: &[f32], _| {
-            let max = data.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-            update_peak(max);
-        },
-        |err| tracing::error!("Preview error: {err}"),
-        None
-    ).ok().and_then(|s| {
-        use cpal::traits::StreamTrait;
-        s.play().ok().map(|_| s)
-    })
+    let config = device
+        .default_input_config()
+        .or_else(|_| device.default_output_config())
+        .ok()?;
+
+    device
+        .build_input_stream(
+            &config.into(),
+            |data: &[f32], _| {
+                let max = data.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+                update_peak(max);
+            },
+            |err| tracing::error!("Preview error: {err}"),
+            None,
+        )
+        .ok()
+        .and_then(|s| {
+            use cpal::traits::StreamTrait;
+            s.play().ok().map(|_| s)
+        })
 }
 
 pub fn get_ui_level() -> f32 {
@@ -216,9 +234,9 @@ pub fn get_ui_level() -> f32 {
 
 fn update_peak(raw_peak: f32) {
     let normalized = raw_peak.sqrt().min(1.0);
-    
+
     let current = PEAK_LEVEL.load(Ordering::Relaxed) as f32 / 1000.0;
-    
+
     let display_level = if normalized > current {
         normalized
     } else {
@@ -232,29 +250,31 @@ fn create_audio_stream(
     device: &cpal::Device,
     tx: mpsc::Sender<AudioPacket>,
 ) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
-    let config = device.default_input_config()
+    let config = device
+        .default_input_config()
         .or_else(|_| device.default_output_config())?;
     let source_rate = config.sample_rate() as f64;
-    let channels    = config.channels() as usize;
+    let channels = config.channels() as usize;
     let needs_resample = (source_rate - TARGET_SAMPLE_RATE as f64).abs() > 1.0;
 
- 
     let resampler_input_size = if needs_resample {
-        ((VAD_CHUNK_SIZE as f64 * source_rate / TARGET_SAMPLE_RATE as f64).ceil() as usize)
-            .max(64)
+        ((VAD_CHUNK_SIZE as f64 * source_rate / TARGET_SAMPLE_RATE as f64).ceil() as usize).max(64)
     } else {
         VAD_CHUNK_SIZE
     };
 
-    info!("Audio stream config: rate={}, channels={}, resample={}", source_rate, channels, needs_resample);
+    info!(
+        "Audio stream config: rate={}, channels={}, resample={}",
+        source_rate, channels, needs_resample
+    );
     info!("Resampler input size goal: {}", resampler_input_size);
- 
+
     let mut resampler = if needs_resample {
         Some(make_resampler(source_rate, resampler_input_size))
     } else {
         None
     };
- 
+
     let mut raw_buf: Vec<f32> = Vec::with_capacity(resampler_input_size * 2);
     let mut accumulator: Vec<f32> = Vec::with_capacity(VAD_CHUNK_SIZE * 4);
 
@@ -267,7 +287,7 @@ fn create_audio_stream(
     };
 
     let mut sample_metrics = Vec::with_capacity(100);
- 
+
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _| {
@@ -276,14 +296,14 @@ fn create_audio_stream(
                 .fold(0.0f32, |m, &v| m.max(v.abs())) * current_gain;
 
             update_peak(local_max);
-            
+
             let mono_iter = data.chunks_exact(channels)
                 .map(|ch| {
                     let sum: f32 = ch.iter().sum();
                     let amplified = (sum / channels as f32) * current_gain;
-                    amplified.clamp(-1.0, 1.0) 
+                    amplified.clamp(-1.0, 1.0)
                 });
- 
+
             if let Some(ref mut rs) = resampler {
                 raw_buf.extend(mono_iter);
 
@@ -315,7 +335,7 @@ fn create_audio_stream(
             } else {
                 accumulator.extend(mono_iter);
             }
- 
+
             while accumulator.len() >= VAD_CHUNK_SIZE {
                 let chunk: Vec<f32> = accumulator.drain(..VAD_CHUNK_SIZE).collect();
                 let t_send = std::time::Instant::now();
@@ -350,7 +370,8 @@ fn create_audio_stream(
 #[allow(deprecated)] // !!!DEVICE.NAME DEPRECATED!!!
 pub fn start_listening(
     device_name: &str,
-    tx: mpsc::Sender<AudioPacket>) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
+    tx: mpsc::Sender<AudioPacket>,
+) -> Result<cpal::Stream, Box<dyn std::error::Error>> {
     let device = find_device(device_name)
         .or_else(|| cpal::default_host().default_input_device())
         .expect("No input device found");
@@ -367,15 +388,15 @@ pub fn start_listening(
 #[cfg(target_os = "linux")]
 pub fn setup_linux_virtual_sink(description: &str) -> bool {
     let sink_name = "Whisper_Virtual_Sink";
-    if let Ok(mut prev) = PREVIOUS_DEFAULT_SOURCE.lock() {
-        if prev.is_none() {
+    if let Ok(mut prev) = PREVIOUS_DEFAULT_SOURCE.lock()
+        && prev.is_none() {
             *prev = pa_get_default_source();
             info!("Saved previous default source: {:?}", *prev);
         }
-    }
     let out = Command::new("pactl")
         .args([
-            "load-module", "module-null-sink",
+            "load-module",
+            "module-null-sink",
             &format!("sink_name={}", sink_name),
             &format!("sink_properties=device.description=\"{}\"", description),
         ])
@@ -392,7 +413,10 @@ pub fn setup_linux_virtual_sink(description: &str) -> bool {
             }
         }
         Ok(o) => {
-            warn!("module-null-sink failed: {}", String::from_utf8_lossy(&o.stderr));
+            warn!(
+                "module-null-sink failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
             return false;
         }
         Err(e) => {
@@ -401,7 +425,10 @@ pub fn setup_linux_virtual_sink(description: &str) -> bool {
         }
     };
     LINUX_VIRTUAL_DEVICE_ID.store(sink_id, Ordering::Relaxed);
-    info!("Created virtual sink '{}' (module ID: {})", sink_name, sink_id);
+    info!(
+        "Created virtual sink '{}' (module ID: {})",
+        sink_name, sink_id
+    );
 
     let Some(real_sink) = pa_get_default_sink() else {
         warn!("Could not get default sink — loopback not created");
@@ -411,7 +438,8 @@ pub fn setup_linux_virtual_sink(description: &str) -> bool {
 
     let lb_out = Command::new("pactl")
         .args([
-            "load-module", "module-loopback",
+            "load-module",
+            "module-loopback",
             &format!("source={}", monitor_source),
             &format!("sink={}", sink_name),
             "latency_msec=0",
@@ -424,14 +452,20 @@ pub fn setup_linux_virtual_sink(description: &str) -> bool {
             match String::from_utf8_lossy(&o.stdout).trim().parse::<u32>() {
                 Ok(id) => {
                     LINUX_LOOPBACK_ID.store(id, Ordering::Relaxed);
-                    info!("Loopback: {} → {} (module ID: {})", monitor_source, sink_name, id);
+                    info!(
+                        "Loopback: {} → {} (module ID: {})",
+                        monitor_source, sink_name, id
+                    );
                 }
                 Err(e) => warn!("Failed to parse loopback module ID: {}", e),
             }
             true
         }
         Ok(o) => {
-            warn!("module-loopback failed: {}", String::from_utf8_lossy(&o.stderr));
+            warn!(
+                "module-loopback failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
             false
         }
         Err(e) => {
@@ -443,12 +477,11 @@ pub fn setup_linux_virtual_sink(description: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 pub fn cleanup_linux_virtual_sink() {
-    if let Ok(mut prev) = PREVIOUS_DEFAULT_SOURCE.lock() {
-        if let Some(name) = prev.take() {
+    if let Ok(mut prev) = PREVIOUS_DEFAULT_SOURCE.lock()
+        && let Some(name) = prev.take() {
             info!("Restoring default source: {}", name);
             pa_set_default_source(&name);
         }
-    }
 
     let loopback_id = LINUX_LOOPBACK_ID.swap(0, Ordering::Relaxed);
     if loopback_id != 0 {

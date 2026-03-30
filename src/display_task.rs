@@ -1,8 +1,8 @@
-use tokio::sync::mpsc;
-use std::io::Write;
-use tracing::{info, debug};
 use crate::types::TranscriptEvent;
 use crate::utility::utils::merge_strings;
+use std::io::Write;
+use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
     let mut last_partial_id: Option<u32> = None;
@@ -12,7 +12,12 @@ pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
 
     while let Some(event) = rx.recv().await {
         match event {
-            TranscriptEvent::Partial { phrase_id, chunk_id: _, text, .. } => {
+            TranscriptEvent::Partial {
+                phrase_id,
+                chunk_id: _,
+                text,
+                ..
+            } => {
                 if finalized.contains(&phrase_id) {
                     debug!(phrase_id, "got partial for finalized phrase — ignoring");
                     continue;
@@ -20,12 +25,18 @@ pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
                 let current_entry = session_text.entry(phrase_id).or_default();
                 *current_entry = merge_strings(current_entry, &text);
                 let display_text = current_entry.clone();
-                
+
                 print!("\r\x1b[2K\x1b[90m[{phrase_id}] ⏳ {}\x1b[0m", display_text);
                 std::io::stdout().flush().ok();
                 last_partial_id = Some(phrase_id);
             }
-            TranscriptEvent::Final { phrase_id, text, duration_s, rtf, .. } => {
+            TranscriptEvent::Final {
+                phrase_id,
+                text,
+                duration_s,
+                rtf,
+                ..
+            } => {
                 finalized.insert(phrase_id);
                 info!(phrase_id, duration_s, rtf, "final -> display");
                 session_text.remove(&phrase_id);
