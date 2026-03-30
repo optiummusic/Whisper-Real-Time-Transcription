@@ -1,14 +1,14 @@
 language = "en"
-device = "pipewire"
+device = "[Monitor] Whisper Virtual Sink"
 use_gpu_fast = true
 use_gpu_acc = true
 speech_probability = 0.5
 max_silence_chunks = 14
-dump_audio = true
+dump_audio = false
 min_window_secs = 4.0
 max_window_secs = 10.0
 min_phrase_secs = 1.0
 max_phrase_secs = 12.0
 gpu_device_fast = 0
 gpu_device_acc = 0
-audio_gain = 1.0
+audio_gain = 3.1

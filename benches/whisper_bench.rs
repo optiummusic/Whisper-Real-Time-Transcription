@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 use translator::whisper::engine::{run_whisper, WhisperConfig};
-use translator::utils::find_first_file_in_dir; // используем имя библиотеки
+use translator::utility::utils::find_first_file_in_dir;
 
 fn bench_whisper_passes(c: &mut Criterion) {
     let audio_bytes = include_bytes!("test_audio.raw");

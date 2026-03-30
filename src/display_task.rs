@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use std::io::Write;
 use tracing::{info, debug};
 use crate::types::TranscriptEvent;
-use crate::utils::merge_strings;
+use crate::utility::utils::merge_strings;
 
 pub async fn display_task(mut rx: mpsc::Receiver<TranscriptEvent>) {
     let mut last_partial_id: Option<u32> = None;

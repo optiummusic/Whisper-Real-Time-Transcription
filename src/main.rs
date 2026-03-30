@@ -5,9 +5,10 @@ use eframe::egui;
 use tokio::{runtime::Handle, sync:: { mpsc, oneshot }};
 use tracing_subscriber::EnvFilter;
 use mimalloc::MiMalloc;
-use translator::utils::{TestState };
-use wgpu::{Instance, InstanceDescriptor, Backends, Adapter, DeviceType};
-use std::sync::atomic::AtomicBool;
+use translator::utility::stats::PipelineEventKind;
+use translator::utility::utils::{TestState, models_are_identical };
+use wgpu::{Instance, InstanceDescriptor, Backends, DeviceType};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -18,7 +19,10 @@ use translator::{
     config::{self, TARGET_SAMPLE_RATE}, 
     translation::Translator, 
     types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationBuffer, TranslationEvent}, 
-    utils::{ merge_strings, init_audio_dumper, ModelType, ModelInfo }, 
+    utility::{
+        utils::{ merge_strings, init_audio_dumper, ModelType, ModelInfo, start_test },
+        stats,
+    }, 
     vad, 
     whisper
 };
@@ -123,9 +127,6 @@ async fn start_backend(
         }).expect("Failed to spawn whisper-pass2 thread");
     pass2_ready_rx.await.expect("pass2 failed to start");
     
-    #[cfg(target_os = "linux")]
-    audio::setup_linux_virtual_sink("Whisper Monitor");
-    
     let translator = Translator::new(event_rx_translator, translation_tx);
     tokio::spawn(translator.translate(std::sync::Arc::clone(&translation_buffer)));
 
@@ -136,7 +137,8 @@ async fn start_backend(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     tracing::info!("Logger initialized");
-
+    #[cfg(target_os = "linux")]
+    audio::setup_linux_virtual_sink("Whisper Monitor");
     #[cfg(not(target_os = "windows"))]
     {
         rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls crypto provider");
@@ -207,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "translator_ui",
         native_options,
         Box::new(|_cc| {
-            _cc.egui_ctx.set_zoom_factor(1.25);
+            _cc.egui_ctx.set_zoom_factor(1.15);
             Ok(Box::new(App::new(
                 event_rx_ui,
                 translation_rx,
@@ -453,7 +455,7 @@ impl App {
             match &self.test_state {
                 TestState::Idle => {
                     if ui.button("▶ Test Pipeline").clicked() {
-                        let rx = translator::utils::start_test();
+                        let rx = start_test();
                         self.test_state = TestState::Running(rx);
                     }
                 }
@@ -602,7 +604,7 @@ impl App {
                     self.save_tx = Some(tx);
                     let should_save = Arc::clone(&self.save_transcription);
                     let path = self.transcript_path.clone();
-                    self.handle.spawn(translator::utils::recording_task(rx, path, should_save));
+                    self.handle.spawn(translator::utility::utils::recording_task(rx, path, should_save));
                     config::init(
                         self.pending_config.language.clone(),
                         self.pending_config.use_gpu_fast,
@@ -613,6 +615,12 @@ impl App {
                     );
                     config::set_device(self.selected_device.clone());
                     config::save_to_toml("config.toml");
+
+                    let identical = models_are_identical();
+                    config::SINGLE_PASS.store(identical, Ordering::Relaxed);
+                    if identical {
+                        tracing::info!("Models are identical — enabling single-pass mode");
+                    }
                     if let Some(tx) = self.startup_tx.take() {
                         let _ = tx.send(());
                     }
@@ -704,6 +712,146 @@ impl App {
     fn refresh_devices(&mut self) {
         self.available_devices = audio::get_input_devices();
     }
+
+    fn draw_analytics(&mut self, ui: &mut egui::Ui) {
+        let s = stats::get();
+ 
+        ui.add_space(8.0);
+ 
+        let speaking = s.is_speaking.load(Ordering::Relaxed);
+        ui.horizontal(|ui| {
+            if speaking {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::RED);
+                ui.colored_label(egui::Color32::RED, "VAD: SPEAKING");
+            } else {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::DARK_GRAY);
+                ui.weak("VAD: silent");
+            }
+        });
+ 
+        if config::SINGLE_PASS.load(Ordering::Relaxed) {
+            ui.horizontal(|ui| {
+                ui.colored_label(egui::Color32::YELLOW, "⚡");
+                ui.colored_label(egui::Color32::YELLOW, "Single-Pass Mode (models identical)");
+            });
+        }
+ 
+        ui.add_space(6.0);
+ 
+        ui.label(egui::RichText::new("Pipeline Events").strong());
+ 
+        let events = s.events_snapshot();
+        let now    = std::time::Instant::now();
+ 
+        egui::ScrollArea::vertical()
+            .id_salt("pipeline_events_scroll")
+            .max_height(130.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if events.is_empty() {
+                    ui.weak("(no events yet)");
+                }
+                for ev in events.iter().rev().take(30) {
+                    let ago_ms = now.duration_since(ev.at).as_millis();
+                    ui.horizontal(|ui| {
+                        match &ev.kind {
+                            PipelineEventKind::Pass1Start => {
+                                ui.colored_label(egui::Color32::from_rgb(255, 200, 60), "[P1]");
+                                ui.weak(format!("pid={} started", ev.phrase_id));
+                            }
+                            PipelineEventKind::Pass1End { rtf, text_len } => {
+                                ui.colored_label(egui::Color32::from_rgb(255, 200, 60), "[P1]");
+                                ui.label(format!(
+                                    "pid={} done  RTF:{:.2}  {}ch",
+                                    ev.phrase_id, rtf, text_len
+                                ));
+                            }
+                            PipelineEventKind::Pass2Start => {
+                                ui.colored_label(egui::Color32::from_rgb(100, 180, 255), "[P2]");
+                                ui.weak(format!("pid={} started", ev.phrase_id));
+                            }
+                            PipelineEventKind::Pass2End { rtf, text_len } => {
+                                ui.colored_label(egui::Color32::from_rgb(100, 180, 255), "[P2]");
+                                ui.label(format!(
+                                    "pid={} done  RTF:{:.2}  {}ch",
+                                    ev.phrase_id, rtf, text_len
+                                ));
+                            }
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.weak(format!("{:.1}s ago", ago_ms as f32 / 1000.0));
+                        });
+                    });
+                }
+            });
+ 
+        ui.add_space(6.0);
+        ui.separator();
+ 
+        ui.label(egui::RichText::new("Drop Counters").strong());
+        egui::Grid::new("drop_counters")
+            .num_columns(2)
+            .spacing([10.0, 2.0])
+            .show(ui, |ui| {
+                ui.weak("Audio overflow:");
+                ui.label(s.audio_overflow.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+ 
+                ui.weak("VAD -> P1 drop:");
+                ui.label(s.vad_pass1_dropped.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+ 
+                ui.weak("VAD -> P2 drop:");
+                ui.label(s.vad_pass2_dropped.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+ 
+                ui.weak("P1 worker drop:");
+                ui.label(s.pass1_dropped.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+ 
+                ui.weak("P2 worker drop:");
+                ui.label(s.pass2_dropped.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+            });
+ 
+        ui.add_space(4.0);
+ 
+        ui.label(egui::RichText::new("Averages").strong());
+        egui::Grid::new("avg_stats")
+            .num_columns(2)
+            .spacing([10.0, 2.0])
+            .show(ui, |ui| {
+                let p1_count = s.pass1_count.load(Ordering::Relaxed);
+                let p2_count = s.pass2_count.load(Ordering::Relaxed);
+ 
+                ui.weak("Pass 1 RTF:");
+                ui.label(format!("{:.3}  ({})", s.avg_pass1_rtf(), p1_count));
+                ui.end_row();
+ 
+                ui.weak("Pass 2 RTF:");
+                ui.label(format!("{:.3}  ({})", s.avg_pass2_rtf(), p2_count));
+                ui.end_row();
+ 
+                ui.weak("Avg audio dur:");
+                ui.label(format!("{:.2}s", s.avg_audio_dur_s()));
+                ui.end_row();
+ 
+                ui.weak("Phrases P1:");
+                ui.label(s.phrases_p1.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+ 
+                ui.weak("Phrases P2:");
+                ui.label(s.phrases_p2.load(Ordering::Relaxed).to_string());
+                ui.end_row();
+            });
+ 
+        ui.add_space(4.0);
+        if ui.small_button("Reset Stats").clicked() {
+            stats::get().reset();
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -739,6 +887,20 @@ impl eframe::App for App {
                         
                         let level = audio::get_ui_level() * gain;
                         ui.add(egui::ProgressBar::new(level.min(1.0)).desired_width(ui.available_width()));
+
+                        ui.add_space(4.0);
+
+                        let muted = config::AUDIO_MUTED.load(Ordering::Relaxed);
+                        let (btn_label, btn_color) = if muted {
+                            ("Unmute Audio", egui::Color32::RED)
+                        } else {
+                            ("Mute Audio", egui::Color32::LIGHT_GRAY)
+                        };
+                        if ui.add(
+                            egui::Button::new(egui::RichText::new(btn_label).color(btn_color))
+                        ).clicked() {
+                            config::AUDIO_MUTED.store(!muted, Ordering::Relaxed);
+                        }
                     });
                     
                     ui.add_space(8.0);
@@ -837,6 +999,18 @@ impl eframe::App for App {
                         self.save_transcription.store(check_val, std::sync::atomic::Ordering::Relaxed);
                     }
                     
+                    let trans_muted = config::TRANSLATION_MUTED.load(Ordering::Relaxed);
+                    let (tr_label, tr_color) = if trans_muted {
+                        ("📝 Enable Translation", egui::Color32::LIGHT_GREEN)
+                    } else {
+                        ("📝 Disable Translation", egui::Color32::LIGHT_GRAY)
+                    };
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new(tr_label).color(tr_color))
+                    ).clicked() {
+                        config::TRANSLATION_MUTED.store(!trans_muted, Ordering::Relaxed);
+                    }
+
                     if ui.button("Reset Transcription").clicked() {
                         self.transcription.clear();
                         self.translations.clear();
@@ -857,7 +1031,7 @@ impl eframe::App for App {
                         
                         if ui.button("Add to custom.toml").clicked() {
                             if !self.dict_new_word.is_empty() && !self.dict_new_trans.is_empty() {
-                                translator::utils::add_to_custom_dict(&self.dict_new_word, &self.dict_new_trans);
+                                translator::utility::utils::add_to_custom_dict(&self.dict_new_word, &self.dict_new_trans);
                                 self.dict_new_word.clear();
                                 self.dict_new_trans.clear();
                             }
@@ -865,6 +1039,14 @@ impl eframe::App for App {
                     
                     ui.add_space(16.0);
                     });
+                    ui.add_space(8.0);
+                    let header = egui::RichText::new("Analytics").strong();
+                            egui::CollapsingHeader::new(header)
+                                .id_salt("analytics_header")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    self.draw_analytics(ui);
+                                });
                 });
                     
         });
@@ -880,6 +1062,23 @@ impl eframe::App for App {
                 }
                 ui.add_space(8.0);
                 ui.heading(":) Live Transcription");
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let speaking = stats::get().is_speaking.load(Ordering::Relaxed);
+                    let (dot_color, label) = if speaking {
+                        (egui::Color32::RED, "⏺")
+                    } else {
+                        (egui::Color32::DARK_GRAY, "⏺")
+                    };
+                    ui.colored_label(dot_color, label).on_hover_text(if speaking { "VAD: Speaking" } else { "VAD: Silent" });
+ 
+                    if config::AUDIO_MUTED.load(Ordering::Relaxed) {
+                        ui.colored_label(egui::Color32::RED, "🔇 MUTED");
+                    }
+                    if config::TRANSLATION_MUTED.load(Ordering::Relaxed) {
+                        ui.colored_label(egui::Color32::from_rgb(180, 120, 0), "📝 OFF");
+                    }
+                });
             });
             ui.separator();
             let available_width = ui.available_width();

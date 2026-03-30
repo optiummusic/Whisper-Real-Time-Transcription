@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use ndarray::{Array, Array2, Array3};
+use ndarray::{Array, Array3};
 use ort::{inputs, session::Session, value::TensorValueType, value::Value};
 use tokio::sync:: { oneshot, mpsc };
 use tracing::{warn};
@@ -11,6 +12,7 @@ use crate::config::{
     self, STITCH_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE,
 };
 use crate::types::{AudioPacket, PhraseChunk};
+use crate::utility::stats;
 
 pub struct VadEngine {
     model: Session,
@@ -172,6 +174,8 @@ impl VadEngine {
 
     fn begin_speech(&mut self) {
         self.is_speaking = true;
+        stats::get().is_speaking.store(true, Ordering::Relaxed);
+
         self.silence_chunks = 0;
         self.phrase_total = 0;
 
@@ -233,6 +237,7 @@ impl VadEngine {
 
     fn finish_phrase(&mut self, results: &mut Vec<PhraseChunk>) {
         self.is_speaking = false;
+        stats::get().is_speaking.store(false, Ordering::Relaxed);
         self.preroll.clear();
 
         if self.phrase_total < config::min_phrase_samples() {
@@ -286,7 +291,7 @@ pub async fn vad_task(
     pass1_tx: mpsc::Sender<PhraseChunk>,
     pass2_tx: mpsc::Sender<PhraseChunk>,
 ) {
-    let vad_path = crate::utils::find_first_file_in_dir("models/vad", "onnx")
+    let vad_path = crate::utility::utils::find_first_file_in_dir("models/vad", "onnx")
         .expect("No VAD model found in models/vad/");
 
     let mut engine = VadEngine::new(&vad_path);
@@ -297,6 +302,10 @@ pub async fn vad_task(
     let mut metric_buffer: Vec<u128> = Vec::with_capacity(MAX_METRICS);
 
     while let Some(audio_data) = rx.recv().await {
+        if config::AUDIO_MUTED.load(Ordering::Relaxed) {
+            while rx.try_recv().is_ok() {}
+            continue;
+        }
         results.clear();
 
         let t0: std::time::Instant = std::time::Instant::now();
@@ -307,13 +316,15 @@ pub async fn vad_task(
             let sum: u128 = metric_buffer.iter().sum();
             let avg = sum as f32 / MAX_METRICS as f32;
             
-            crate::utils::performance(avg, "vad_process_avg_100".to_string());
+            crate::utility::utils::performance(avg, "vad_process_avg_100".to_string());
             
             metric_buffer.clear();
         }
 
+        let single_pass = config::SINGLE_PASS.load(Ordering::Relaxed);
+
         for chunk in results.drain(..) {
-            let send_to_pass2 = !chunk.short || !chunk.is_last;
+            let send_to_pass2 = (!chunk.short || !chunk.is_last) && !single_pass;
             let is_last = chunk.is_last;
             let chunk_for_pass2 = if send_to_pass2 { Some(chunk.clone()) } else { None };
 
@@ -322,6 +333,7 @@ pub async fn vad_task(
             } else {
                 if let Err(e) = pass1_tx.try_send(chunk) {
                     warn!("VAD->pass1 chunk dropped: {}", e);
+                    stats::get().vad_pass1_dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
@@ -331,6 +343,7 @@ pub async fn vad_task(
                 } else {
                     if let Err(e) = pass2_tx.try_send(c) {
                         warn!("VAD->pass2 chunk dropped: {}", e);
+                        stats::get().vad_pass2_dropped.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

@@ -1,6 +1,16 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{ RwLock, OnceLock };
 
+// GUARDS
+/// When true, VAD task drains audio packets and emits nothing downstream.
+pub static AUDIO_MUTED: AtomicBool = AtomicBool::new(false);
+ 
+/// When true, Translator skips processing and sends no TranslationEvents.
+pub static TRANSLATION_MUTED: AtomicBool = AtomicBool::new(false);
+
+// Skip if whisper models are the same
+pub static SINGLE_PASS: AtomicBool = AtomicBool::new(false);
+
 pub const TARGET_SAMPLE_RATE:   u32   = 16_000;
 pub const VAD_CHUNK_SIZE:       usize = 512;
 

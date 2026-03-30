@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, RwLock};
-use crate::utils::get_model_path;
+use crate::utility::utils::get_model_path;
 use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -121,6 +121,10 @@ impl Translator {
         while let Some(evt) = self.event.recv().await {
             match evt {
                 TranscriptEvent::Final { phrase_id, text, .. } => {
+                    if crate::config::TRANSLATION_MUTED.load(std::sync::atomic::Ordering::Relaxed) {
+                        tracing::debug!(pid = phrase_id, "Translation muted — skipping phrase");
+                        continue;
+                    }
                     tracing::debug!(pid = phrase_id, "Processing final transcript: '{}'", text);
                     self.process_final_text(phrase_id, &text, Arc::clone(&buffer)).await;
                 }
@@ -200,7 +204,7 @@ impl Translator {
         }
 
         let elapsed_ms = t0.elapsed().as_secs_f32() * 1000.0;
-        crate::utils::performance(elapsed_ms, format!("translate_phrase_{}", phrase_id));
+        crate::utility::utils::performance(elapsed_ms, format!("translate_phrase_{}", phrase_id));
     }
 
     fn clean_word(word: &str) -> String {

@@ -21,23 +21,95 @@ pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
 pub fn merge_strings(old: &str, new: &str) -> String {
     if old.is_empty() { return new.to_string(); }
     if new.is_empty() { return old.to_string(); }
-    if new.contains(old.trim()) { return new.to_string(); }
+ 
+    // Fast path: new literally contains the whole old string.
+    if new.to_lowercase().contains(&old.trim().to_lowercase()) {
+        return new.to_string();
+    }
  
     let old_words: Vec<&str> = old.split_whitespace().collect();
     let new_words: Vec<&str> = new.split_whitespace().collect();
  
-    let max_overlap = old_words.len().min(new_words.len());
+    // Normalise a word for overlap comparison: lowercase + strip non-alphanumeric
+    let norm = |w: &str| -> String {
+        w.chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    };
  
+    let old_norm: Vec<String> = old_words.iter().map(|w| norm(w)).collect();
+    let new_norm: Vec<String> = new_words.iter().map(|w| norm(w)).collect();
+ 
+    let max_overlap = old_norm.len().min(new_norm.len());
+ 
+    // Try longest overlap first.
     for overlap in (1..=max_overlap).rev() {
-        let old_suffix = &old_words[old_words.len() - overlap..];
-        let new_prefix = &new_words[..overlap];
+        let old_suffix = &old_norm[old_norm.len() - overlap..];
+        let new_prefix = &new_norm[..overlap];
+ 
+        // Skip trivial single-word overlaps on very common words
+        // (avoids spurious merges on filler like "the", "a", "i").
+        if overlap == 1 && old_suffix[0].len() <= 2 {
+            continue;
+        }
+ 
         if old_suffix == new_prefix {
             let mut result = old_words[..old_words.len() - overlap].to_vec();
             result.extend_from_slice(&new_words);
             return result.join(" ");
         }
     }
-    new.to_string()
+ 
+    // No clean overlap found.  Prefer whichever result contains more words.
+    if new_words.len() >= old_words.len() {
+        new.to_string()
+    } else {
+        // produced a truncated window.  Keep old to avoid visual regression.
+        old.to_string()
+    }
+}
+
+pub fn models_are_identical() -> bool {
+    let fast = find_first_file_in_dir("models/whisper-fast",    "bin");
+    let acc  = find_first_file_in_dir("models/whisper-accurate", "bin");
+ 
+    let (Some(fast_path), Some(acc_path)) = (fast, acc) else { return false; };
+ 
+    if fast_path == acc_path {
+        tracing::info!("Model identity check: same path → single-pass mode");
+        return true;
+    }
+ 
+    let fast_size = fs::metadata(&fast_path).map(|m| m.len()).unwrap_or(0);
+    let acc_size  = fs::metadata(&acc_path) .map(|m| m.len()).unwrap_or(0);
+ 
+    if fast_size == 0 || fast_size != acc_size {
+        tracing::info!("Model identity check: different sizes ({} vs {}) → two-pass mode",
+                        fast_size, acc_size);
+        return false;
+    }
+ 
+    use std::io::Read;
+    const SAMPLE: usize = 8192;
+    let mut buf_f = [0u8; SAMPLE];
+    let mut buf_a = [0u8; SAMPLE];
+ 
+    let n_f = fs::File::open(&fast_path)
+        .and_then(|mut f| f.read(&mut buf_f))
+        .unwrap_or(0);
+    let n_a = fs::File::open(&acc_path)
+        .and_then(|mut f| f.read(&mut buf_a))
+        .unwrap_or(0);
+ 
+    let identical = n_f == n_a && buf_f[..n_f] == buf_a[..n_a];
+    tracing::info!(
+        "Model identity check: header comparison → {} (same_size={}, same_bytes={})",
+        if identical { "single-pass" } else { "two-pass" },
+        true,
+        identical,
+    );
+    identical
 }
 
 pub fn get_model_path(relative_path: &str) -> PathBuf {
@@ -170,7 +242,7 @@ pub async fn recording_task(
 }
 
 pub fn add_to_custom_dict(word: &str, translation: &str) {
-    let dict_dir = crate::utils::get_model_path("dictionary");
+    let dict_dir = get_model_path("dictionary");
     let _ = std::fs::create_dir_all(&dict_dir);
     let custom_path = dict_dir.join("custom.toml");
 
@@ -280,7 +352,7 @@ fn run_test_inner() -> Result<String, String> {
     static TEST_WAV: &[u8] = include_bytes!("./assets/test.wav");
     let samples = decode_wav(TEST_WAV)?;
 
-    let vad_path = crate::utils::find_first_file_in_dir("models/vad", "onnx")
+    let vad_path = find_first_file_in_dir("models/vad", "onnx")
         .ok_or("VAD model not found")?;
     let mut vad = crate::vad::VadEngine::new(&vad_path);
     let mut chunks: Vec<crate::types::PhraseChunk> = Vec::new();

@@ -308,7 +308,7 @@ fn create_audio_stream(
                     sample_metrics.push(t0.elapsed().as_micros());
                     if sample_metrics.len() >= 100 {
                         let avg = (sample_metrics.iter().sum::<u128>() as f32 / 100.0) / 1000.0; // в мс
-                        crate::utils::performance(avg, "audio_resample_avg_100".to_string());
+                        crate::utility::utils::performance(avg, "audio_resample_avg_100".to_string());
                         sample_metrics.clear();
                     }
                 }
@@ -323,7 +323,7 @@ fn create_audio_stream(
                     Ok(()) => {
                         let dur = t_send.elapsed().as_micros();
                         if dur > 1000 {
-                            crate::utils::performance(dur as f32 / 1000.0, "audio_tx_slowdown_warn".to_string());
+                            crate::utility::utils::performance(dur as f32 / 1000.0, "audio_tx_slowdown_warn".to_string());
                         }
                     }
                     Err(e) => match e {
@@ -332,6 +332,7 @@ fn create_audio_stream(
                                 target: "audio_source",
                                 "Audio buffer OVERFLOW! VAD task is too slow. Dropping audio data..."
                             );
+                            crate::utility::stats::get().audio_overflow.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         TrySendError::Closed(_) => {
                             warn!("Audio receiver (VAD) closed. Stream will continue but data is lost.");

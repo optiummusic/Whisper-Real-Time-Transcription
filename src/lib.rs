@@ -2,8 +2,7 @@ pub mod types;
 pub mod audio;
 pub mod display_task;
 pub mod vad;
-#[path = "utils/utils.rs"]
-pub mod utils;
+pub mod utility;
 pub mod whisper;
 pub mod config;
 pub mod translation;
@@ -23,6 +22,7 @@ pub struct Pass1Job {
     chunk_id:  u32,
     short: bool,
     audio:     Vec<f32>,
+    is_last:   bool,
 }
 
 pub struct Pass2Job {
@@ -36,6 +36,7 @@ pub struct Pass1Result {
     pub chunk_id:   u32,
     pub text:       String,
     pub short:      bool,
+    pub is_last:    bool,
     pub duration_s: f32,
     pub rtf:        f32,
 }

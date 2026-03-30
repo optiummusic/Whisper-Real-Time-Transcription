@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::TrySendError;
 use std::sync::Arc;
 use std::collections::{ HashMap };
@@ -6,7 +7,10 @@ use tracing::{debug, error, info, trace };
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 use crate::types::{PhraseChunk, TranscriptEvent};
-use crate::utils::{ append_context, dump_audio_to_file} ;
+use crate::utility::{
+    utils::{ append_context, dump_audio_to_file, find_first_file_in_dir},
+    stats,
+};
 use crate::whisper::engine::{run_whisper, WhisperConfig};
 use crate::{Pass1Job, Pass2Job, Pass1Result};
 
@@ -39,7 +43,7 @@ pub async fn pass1_task(
                 ctx_params.use_gpu(current_cfg.use_gpu_fast);
                 ctx_params.gpu_device(current_cfg.gpu_device_fast);
 
-                let whisper_path = match crate::utils::find_first_file_in_dir("models/whisper-fast", "bin") {
+                let whisper_path = match find_first_file_in_dir("models/whisper-fast", "bin") {
                     Some(path) => path,
                     None => {
                         println!("CRITICAL: Pass1: No model found in models/whisper-fast!");
@@ -90,13 +94,16 @@ pub async fn pass1_task(
                 rtf = format!("{:.3}", rtf),
                 "Inference finished"
             );
-
+            if job.is_last {
+                stats::get().record_pass1_done(job.phrase_id, rtf, duration_s, text.len());
+            }
             if !text.is_empty() {
                 if res_tx.blocking_send(Pass1Result {
                         phrase_id: job.phrase_id,
                         chunk_id:  job.chunk_id,
                         text,
                         short:      job.short,
+                        is_last:    job.is_last,
                         duration_s,
                         rtf,
                     }).is_err() {
@@ -112,13 +119,16 @@ pub async fn pass1_task(
 
             Some(res) = res_rx.recv() => {
                 let now = std::time::Instant::now();
-                let valid = stream.is_result_valid(res.phrase_id, res.short);
+                let single_pass = config::SINGLE_PASS.load(Ordering::Relaxed);
+                let valid = stream.is_result_valid(res.phrase_id, res.short, res.is_last, single_pass);
                 debug!(pid = res.phrase_id, cid = res.chunk_id, valid, "Pass1 got result from Whisper");
                 if !valid { continue; }
 
                 debug!(pid = res.phrase_id, "Pass1 sending to Transcript Event...");
 
-                let event = if res.short {
+                let is_final_event = res.short || (single_pass && res.is_last);
+
+                let event = if is_final_event {
                     TranscriptEvent::Final {
                         phrase_id:  res.phrase_id,
                         text:       res.text,
@@ -143,10 +153,12 @@ pub async fn pass1_task(
                 debug!(pid = chunk.phrase_id, cid = chunk.chunk_id,
                     len = chunk.data.len(), is_last = chunk.is_last, "pass1 got chunk");
                 if let Some(job) = stream.process_incoming(chunk, &mut rx) {
+                    stats::get().record_pass1_start(job.phrase_id);
                     if let Err(e) = job_tx.try_send(job) {
                         match e {
                             mpsc::error::TrySendError::Full(_) => {
                                 debug!("Pass1 Worker busy, dropping newest chunk");
+                                stats::get().pass1_dropped.fetch_add(1, Ordering::Relaxed);
                             }
                             mpsc::error::TrySendError::Closed(_) => {
                                 error!("Worker thread died! Shutting down async task.");
@@ -182,7 +194,7 @@ pub async fn pass2_task(
                 ctx_params.use_gpu(current_cfg.use_gpu_acc);
                 ctx_params.gpu_device(current_cfg.gpu_device_acc);
 
-                let whisper_path = match crate::utils::find_first_file_in_dir("models/whisper-accurate", "bin") {
+                let whisper_path = match find_first_file_in_dir("models/whisper-accurate", "bin") {
                     Some(path) => path,
                     None => {
                         println!("CRITICAL: Pass2: No model found in models/whisper-accurate!");
@@ -225,6 +237,7 @@ pub async fn pass2_task(
                 text_len = text.len(),
                 "Inference finished"
             );
+            stats::get().record_pass2_done(job.phrase_id, rtf, text.len());
  
             let event = TranscriptEvent::Final {
                 phrase_id:  job.phrase_id,
@@ -289,18 +302,24 @@ pub async fn pass2_task(
                         debug!(pid = chunk.phrase_id, "pass2: phrase too short after accumulation, skipping");
                         continue;
                     }
-                    
+
+                    stats::get().record_pass2_start(chunk.phrase_id);
                     let job = Pass2Job { phrase_id: chunk.phrase_id, audio, context: Arc::clone(&last_context), };
                     if let Err(e) = job_tx.try_send(job) {
                         match e {
-                            TrySendError::Full(_) => debug!("Pass2 Worker busy, skipping chunk"),
+                            TrySendError::Full(_) => {
+                                debug!("Pass2 Worker busy, skipping chunk");
+                                stats::get().pass2_dropped.fetch_add(1, Ordering::Relaxed);
+                            },
                             TrySendError::Disconnected(_) => {
                                 error!("Worker thread died! Shutting down async task.");
                                 break;
                             }
                         }
                     }
-                } else { continue; }
+                } else { 
+                    continue; 
+                }
             }
         }
     }
@@ -373,15 +392,21 @@ impl StreamInfo {
         self.make_job(&chunk)
     }
 
-    fn is_result_valid(&self, phrase_id: u32, short: bool) -> bool {
+    fn is_result_valid(
+        &self,
+        phrase_id: u32,
+        short: bool,
+        is_last: bool,
+        single_pass: bool,
+    ) -> bool {
         if short { return true; }
+        if is_last && single_pass { return true; }
         if Some(phrase_id) == self.closed_id { return false; }
         if let Some(cur) = self.current_id {
             if phrase_id < cur { return false; }
         }
         true
     }
-
     fn reset(&mut self, new_id: u32) {
         self.buffer.clear();
         self.current_id = Some(new_id);
@@ -408,6 +433,12 @@ impl StreamInfo {
 
         if chunk.is_last { self.buffer.clear(); }
         trace!("[MAKE JOB]{} phrase, {} chunk is sent", phrase_id, chunk_id);
-        Some(Pass1Job { phrase_id, chunk_id, short: chunk.short, audio })
+        Some(Pass1Job { 
+            phrase_id, 
+            chunk_id, 
+            short: 
+            chunk.short, 
+            is_last: chunk.is_last,
+            audio })
     }
 }
