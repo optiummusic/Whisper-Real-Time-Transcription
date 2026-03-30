@@ -14,6 +14,7 @@ use crate::types::{AudioPacket, PhraseChunk};
 
 pub struct VadEngine {
     model: Session,
+    input_buf: Vec<f32>,
     h: Array3<f32>,
     c: Array3<f32>,
     sr: Value<TensorValueType<i64>>,
@@ -57,6 +58,7 @@ impl VadEngine {
 
         Self {
             model,
+            input_buf: vec![0.0f32; VAD_CHUNK_SIZE],
             h,
             c,
             sr,
@@ -117,8 +119,8 @@ impl VadEngine {
             return None;
         }
     
-        let input_array = Array2::from_shape_vec((1, VAD_CHUNK_SIZE), audio.to_vec()).ok()?;
-        let input_val = match Value::from_array(input_array) {
+        self.input_buf.copy_from_slice(audio);
+        let input_val = match Value::from_array(([1, VAD_CHUNK_SIZE], self.input_buf.clone())) {
             Ok(v) => v,
             Err(e) => { tracing::error!("VAD: Failed to create input tensor: {:?}", e); return None; }
         };
@@ -311,20 +313,23 @@ pub async fn vad_task(
         }
 
         for chunk in results.drain(..) {
-            if chunk.is_last {
-                if pass1_tx.send(chunk.clone()).await.is_err() { break; }
+            let send_to_pass2 = !chunk.short || !chunk.is_last;
+            let is_last = chunk.is_last;
+            let chunk_for_pass2 = if send_to_pass2 { Some(chunk.clone()) } else { None };
+
+            if is_last {
+                if pass1_tx.send(chunk).await.is_err() { break; }
             } else {
-                if let Err(e) = pass1_tx.try_send(chunk.clone()) {
+                if let Err(e) = pass1_tx.try_send(chunk) {
                     warn!("VAD->pass1 chunk dropped: {}", e);
                 }
             }
 
-            let send_to_pass2 = !chunk.short || !chunk.is_last;
-            if send_to_pass2 {
-                if chunk.is_last {
-                    if pass2_tx.send(chunk).await.is_err() { break; }
+            if let Some(c) = chunk_for_pass2 {
+                if is_last {
+                    if pass2_tx.send(c).await.is_err() { break; }
                 } else {
-                    if let Err(e) = pass2_tx.try_send(chunk) {
+                    if let Err(e) = pass2_tx.try_send(c) {
                         warn!("VAD->pass2 chunk dropped: {}", e);
                     }
                 }

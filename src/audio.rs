@@ -288,15 +288,11 @@ fn create_audio_stream(
                 raw_buf.extend(mono_iter);
 
                 while raw_buf.len() >= resampler_input_size {
-                    let block: Vec<f32> = raw_buf.drain(..resampler_input_size).collect();
                     let t0 = std::time::Instant::now();
 
-                    let input_frames = block.len();
-
-                    let input = InterleavedSlice::new(&block, 1, input_frames).unwrap();
+                    let input = InterleavedSlice::new(&raw_buf[..resampler_input_size], 1, resampler_input_size).unwrap();
                     let len = output_buf.len();
-                    let mut output =
-                        InterleavedSlice::new_mut(&mut output_buf, 1, len).unwrap();
+                    let mut output = InterleavedSlice::new_mut(&mut output_buf, 1, len).unwrap();
 
                     indexing.input_offset = 0;
                     indexing.output_offset = 0;
@@ -308,6 +304,7 @@ fn create_audio_stream(
                         }
                         Err(e) => warn!("Resampler error: {}", e),
                     }
+                    raw_buf.drain(..resampler_input_size);
                     sample_metrics.push(t0.elapsed().as_micros());
                     if sample_metrics.len() >= 100 {
                         let avg = (sample_metrics.iter().sum::<u128>() as f32 / 100.0) / 1000.0; // в мс

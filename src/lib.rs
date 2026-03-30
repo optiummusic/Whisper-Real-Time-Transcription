@@ -2,6 +2,7 @@ pub mod types;
 pub mod audio;
 pub mod display_task;
 pub mod vad;
+#[path = "utils/utils.rs"]
 pub mod utils;
 pub mod whisper;
 pub mod config;

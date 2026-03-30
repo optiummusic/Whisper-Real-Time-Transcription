@@ -12,122 +12,134 @@ on:
 
 jobs:
   # ── Linux: Vulkan ───────────────────────────────────────────────
-  # build-linux:
-  #   name: Linux (Vulkan)
-  #   runs-on: ubuntu-latest
-  #   container: 
-  #     image: archlinux:latest
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
+  build-linux:
+    name: Linux (Vulkan)
+    runs-on: ubuntu-latest
+    container: 
+      image: archlinux:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  #     - name: Install Dependencies (Arch Linux)
-  #       run: |
-  #         pacman -Syu --noconfirm
-  #         pacman -S --noconfirm --needed \
-  #           base-devel rustup cmake clang vulkan-devel shaderc \
-  #           alsa-lib libxkbcommon wayland git wget zip
+      - name: Install Dependencies (Arch Linux)
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel rustup cmake clang vulkan-devel shaderc \
+            alsa-lib libxkbcommon wayland git wget zip
 
-  #     - name: Fix git safe directory
-  #       run: git config --global --add safe.directory /__w/Whisper-Real-Time-Transcription/Whisper-Real-Time-Transcription
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory /__w/Whisper-Real-Time-Transcription/Whisper-Real-Time-Transcription
 
-  #     - name: Setup Rust
-  #       run: rustup default stable
+      - name: Setup Rust
+        run: rustup default stable
 
-  #     - name: Build Project
-  #       run: |
-  #         export CC=clang
-  #         export CXX=clang++
-  #         cargo build --release --features vulkan --no-default-features
+      - name: Build Project
+        run: |
+          export CC=clang
+          export CXX=clang++
+          export RUSTFLAGS="-C target-cpu=x86-64-v3 -C target-feature=+avx2,+fma -C llvm-args=-fp-contract=fast"
+          cargo build --release --features vulkan --no-default-features
           
-  #         mkdir release_pkg
-  #         cp target/release/translator release_pkg/
-  #         tar -czvf arch-translator-linux-vulkan.tar.gz -C release_pkg .
+          mkdir release_pkg
+          cp target/release/translator release_pkg/
+          tar -czvf arch-translator-linux-vulkan.tar.gz -C release_pkg .
 
-  #     - name: Upload Artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: linux-vulkan
-  #         path: arch-translator-linux-vulkan.tar.gz
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-vulkan
+          path: arch-translator-linux-vulkan.tar.gz
 
   # ── macOS: Metal ───────────────────────────────────────────────
-  # build-macos:
-  #   name: macOS (Metal)
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Install dependencies
-  #       run: brew install cmake
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - name: Build
-  #       run: |
-  #         cargo build --release --features metal --no-default-features
-  #         zip -j arch-translator-macos-metal.zip target/release/translator
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: macos-metal
-  #         path: arch-translator-macos-metal.zip
+  build-macos:
+    name: macOS (Metal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --release --features metal --no-default-features
+          zip -j arch-translator-macos-metal.zip target/release/translator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-metal
+          path: arch-translator-macos-metal.zip
 
   # ── Windows: CUDA ───────────────────────────────────────────────
-  # build-windows-cuda:
-  #   name: Windows (CUDA)
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Install dependencies
-  #       run: |
-  #         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
-  #         choco install llvm -y
-  #     - name: Install CUDA toolkit
-  #       uses: Jimver/cuda-toolkit@v0.2.19
-  #       id: cuda-toolkit
-  #       with:
-  #         cuda: '12.4.0'
-  #         method: network
-  #         sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - name: Build
-  #       shell: pwsh
-  #       run: |
-  #         $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-  #         $env:CUDACXX = "$env:CUDA_PATH\bin\nvcc.exe"
-  #         cargo build --release --features cuda --no-default-features
+  build-windows-cuda:
+    name: Windows (CUDA)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install nasm ninja llvm -y
+
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-cpu=x86-64-v3 -C target-feature=+avx2,+fma"
+          $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          $env:CUDACXX = "$env:CUDA_PATH\bin\nvcc.exe"
+          $env:CFLAGS = "/O2 /arch:AVX2"
+          $env:CXXFLAGS = "/O2 /arch:AVX2"
+          $env:CMAKE_GENERATOR = "Ninja"
+          cargo build --release --features cuda --no-default-features
           
-  #         New-Item -ItemType Directory -Force -Path "pkg"
-  #         Copy-Item "target/release/translator.exe" -Destination "pkg/"
-  #         Copy-Item "target/release/*.dll" -Destination "pkg/"
-  #         Compress-Archive -Path "pkg/*" -DestinationPath "arch-translator-win-cuda.zip"
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: windows-cuda
-  #         path: arch-translator-win-cuda.zip
+          New-Item -ItemType Directory -Force -Path "pkg"
+          Copy-Item "target/release/translator.exe" -Destination "pkg/"
+          Copy-Item "target/release/*.dll" -Destination "pkg/"
+          Compress-Archive -Path "pkg/*" -DestinationPath "arch-translator-win-cuda.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda
+          path: arch-translator-win-cuda.zip
 
   # ── Windows: CPU ────────────────────────────────────────────────
-  # build-windows-cpu:
-  #   name: Windows (CPU)
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Install dependencies
-  #       run: choco install cmake llvm -y
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: Swatinem/rust-cache@v2
-  #     - name: Build
-  #       shell: pwsh
-  #       run: |
-  #         $env:RUSTFLAGS="-C target-cpu=x86-64-v3"
-  #         cargo build --release --no-default-features
+  build-windows-cpu:
+    name: Windows (CPU)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          choco install nasm ninja cmake llvm -y
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = "-C target-cpu=x86-64-v3 -C target-feature=+avx2,+fma"
+          $env:CFLAGS = "/O2 /arch:AVX2"
+          $env:CXXFLAGS = "/O2 /arch:AVX2"
+          $env:CMAKE_GENERATOR = "Ninja"
+          cargo build --release --no-default-features
           
-  #         New-Item -ItemType Directory -Force -Path "pkg_cpu"
-  #         Copy-Item "target/release/translator.exe" -Destination "pkg_cpu/"
-  #         Copy-Item "target/release/*.dll" -Destination "pkg_cpu/"
-  #         Compress-Archive -Path "pkg_cpu/*" -DestinationPath "arch-translator-win-cpu.zip"
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: windows-cpu
-  #         path: arch-translator-win-cpu.zip
+          New-Item -ItemType Directory -Force -Path "pkg_cpu"
+          Copy-Item "target/release/translator.exe" -Destination "pkg_cpu/"
+          Copy-Item "target/release/*.dll" -Destination "pkg_cpu/"
+          Compress-Archive -Path "pkg_cpu/*" -DestinationPath "arch-translator-win-cpu.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-cpu
+          path: arch-translator-win-cpu.zip
 
   # ── Windows: Vulkan ─────────────────────────────────────────────
   build-windows-vulkan:
@@ -149,7 +161,9 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Install dependencies
-        run: choco install cmake llvm ninja -y
+        run: |
+          choco install nasm cmake llvm ninja -y
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
@@ -175,10 +189,12 @@ jobs:
         working-directory: w
         run: |
           $env:VULKAN_SDK = "${{ env.VULKAN_SDK }}"
-          $env:RUSTFLAGS = "-C target-cpu=x86-64-v3"
+          $env:RUSTFLAGS = "-C target-cpu=x86-64-v3 -C target-feature=+avx2,+fma"
           $env:CMAKE_GENERATOR = "Ninja"
           $env:CC = "cl.exe"
           $env:CXX = "cl.exe"
+          $env:CFLAGS = "/O2 /arch:AVX2"
+          $env:CXXFLAGS = "/O2 /arch:AVX2"
           
           cargo build --release --features vulkan --no-default-features
           
@@ -197,8 +213,8 @@ jobs:
   # ── PUBLISH RELEASE ─────────────────────────────────────────────
   publish:
     name: Create GitHub Release
-    # needs: [build-linux, build-macos, build-windows-cuda, build-windows-cpu, build-windows-vulkan]
-    needs: [build-windows-vulkan]
+    needs: [build-linux, build-macos, build-windows-cuda, build-windows-cpu, build-windows-vulkan]
+    # needs: [build-windows-cpu]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -222,6 +238,6 @@ jobs:
             - Windows (CUDA, Vulkan, CPU)
             - macOS (Metal)
 
-            *Note: Models are not included. Use `install.sh` or check README for model paths.*
+            *Note: Models are not included. Download in the UI or use `install.sh` or check README for model paths.*
           draft: false
           prerelease: false

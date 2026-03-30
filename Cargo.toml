@@ -26,6 +26,13 @@ wgpu = "29.0.0"
 pollster = "0.4.0"
 chrono = { version = "0.4.44", features = ["std", "clock", "serde"] }
 
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", features = ["ring"] }
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "native-tls"] }
+
 [features]
 default = ["vulkan"]
 vulkan   = ["whisper-rs/vulkan"]
