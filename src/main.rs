@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::{collections::BTreeMap, sync::Arc};
 
 use eframe::egui;
@@ -148,6 +149,25 @@ async fn start_backend(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+    // ENV VARIABLE CHECK FOR TEST RUN
+    if std::env::var("RUN_PIPELINE_TEST").is_ok() {
+        std::panic::set_hook(Box::new(|panic_info| {
+            eprintln!("CRITICAL PANIC: {}", panic_info);
+            std::process::exit(101);
+        }));
+        
+        match translator::utility::utils::run_test_inner().await {
+            Ok(res) => {
+                println!("TEST_OK:{}", res);
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("TEST_ERR:{}", e);
+                std::process::exit(1);
+            }
+        }
+    }
     init_logging();
     tracing::info!("Logger initialized");
     #[cfg(target_os = "linux")]
@@ -263,7 +283,7 @@ struct App {
     available_gpus: Vec<(i32, String)>,
 
     save_transcription: Arc<AtomicBool>,
-    transcript_path: String,
+    transcript_path: PathBuf,
     save_tx: Option<mpsc::Sender<String>>,
 
     dict_new_word: String,
@@ -371,6 +391,7 @@ impl App {
         };
         let preview = audio::start_preview(&selected);
         let save_flag = Arc::new(AtomicBool::new(false));
+        let transcript_filename = chrono::Local::now().format("%Y_%m_%d_%H_%M").to_string();
 
         Self {
             event_rx,
@@ -398,10 +419,9 @@ impl App {
             available_gpus: get_available_gpus(),
             save_transcription: save_flag,
             save_tx: None,
-            transcript_path: format!(
-                "transcriptions/{}.txt",
-                chrono::Local::now().format("%Y_%m_%d_%H_%M")
-            ),
+            transcript_path: translator::utility::utils::get_base_dir()
+                .join("transcriptions")
+                .join(format!("{}.txt", transcript_filename)),
             dict_new_word: String::new(),
             dict_new_trans: String::new(),
             test_state: TestState::Idle,
@@ -961,6 +981,7 @@ impl App {
         if ui.small_button("Reset Stats").clicked() {
             stats::get().reset();
         }
+        ui.add_space(8.0);
     }
 }
 
@@ -1288,71 +1309,39 @@ impl eframe::App for App {
                         if data.is_final {
                             let words: Vec<&str> = data.text.split_whitespace().collect();
                             let trans = self.translations.get(id).cloned().unwrap_or_default();
+                            
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(8.0, 4.0);
+                                ui.weak(format!("[{id}]"));
 
-                            let row_groups: Vec<Vec<usize>> =
-                                if let Some(prev_rects) = self.phrase_rects.get(id) {
-                                    let mut rows: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
-                                    for (i, r) in prev_rects.iter().enumerate() {
-                                        rows.entry(r.min.y as i32).or_default().push(i);
-                                    }
-                                    rows.into_values().collect()
-                                } else {
-                                    vec![(0..words.len()).collect()]
-                                };
+                                let mut i = 0;
+                                while i < words.len() {
+                                    let translation_match = trans.iter().find(|(wi, _, _)| *wi == i);
 
-                            let row_count = row_groups.len();
-                            let mut new_rects: Vec<egui::Rect> =
-                                vec![egui::Rect::NOTHING; words.len()];
-
-                            for (row_idx, row_word_indices) in row_groups.iter().enumerate() {
-                                let row_rects = ui
-                                    .horizontal_wrapped(|ui| {
-                                        if row_idx == 0 {
-                                            ui.weak(format!("[{id}]"));
-                                        }
-                                        let mut rects = vec![];
-                                        for &wi in row_word_indices {
-                                            if wi < words.len() {
-                                                let r = ui.colored_label(
-                                                    egui::Color32::LIGHT_GREEN,
-                                                    words[wi],
-                                                );
-                                                rects.push((wi, r.rect));
-                                            }
-                                        }
-                                        if row_idx == row_count - 1 {
-                                            ui.weak(format!(
-                                                "({:.1}s | RTF: {:.2})",
-                                                data.duration_s, data.rtf
-                                            ));
-                                        }
-                                        rects
-                                    })
-                                    .inner;
-
-                                for (wi, rect) in row_rects {
-                                    if wi < new_rects.len() {
-                                        new_rects[wi] = rect;
+                                    if let Some((_wi, span, translated_text)) = translation_match {
+                                        let span = *span;
+                                        ui.vertical(|ui| {
+                                            ui.horizontal(|ui| {
+                                                for j in 0..span {
+                                                    if i + j < words.len() {
+                                                        ui.colored_label(egui::Color32::LIGHT_GREEN, words[i + j]);
+                                                    }
+                                                }
+                                            });
+                                            ui.colored_label(egui::Color32::RED, translated_text);
+                                        });
+                                        i += span;
+                                    } else {
+                                        ui.vertical(|ui| {
+                                            ui.colored_label(egui::Color32::LIGHT_GREEN, words[i]);
+                                            ui.colored_label(egui::Color32::TRANSPARENT, " "); 
+                                        });
+                                        i += 1;
                                     }
                                 }
 
-                                let row_set: HashSet<usize> =
-                                    row_word_indices.iter().copied().collect();
-                                let row_trans: Vec<_> = trans
-                                    .iter()
-                                    .filter(|(wi, _, _)| row_set.contains(wi))
-                                    .collect();
-
-                                if !row_trans.is_empty() {
-                                    ui.horizontal_wrapped(|ui| {
-                                        for (_, _, text) in &row_trans {
-                                            ui.colored_label(egui::Color32::RED, text);
-                                        }
-                                    });
-                                }
-                            }
-
-                            self.phrase_rects.insert(*id, new_rects);
+                                ui.weak(format!("({:.1}s | RTF: {:.2})", data.duration_s, data.rtf));
+                            });
 
                             if !self.phrases_signaled.contains(id) && !words.is_empty() {
                                 self.phrases_signaled.insert(*id);

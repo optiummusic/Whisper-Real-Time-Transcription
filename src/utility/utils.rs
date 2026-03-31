@@ -3,8 +3,10 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use std::process::Command;
+use tokio::fs::{File, OpenOptions, create_dir_all};
+use tokio::io::AsyncWriteExt;
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
     if text.is_empty() {
@@ -125,6 +127,17 @@ pub fn models_are_identical() -> bool {
     identical
 }
 
+pub fn get_base_dir() -> PathBuf {
+    if let Some(pkg_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        PathBuf::from(pkg_dir)
+    } else {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .expect("Failed to get exe path")
+    }
+}
+
 pub fn get_model_path(relative_path: &str) -> PathBuf {
     let exe_path = std::env::current_exe().expect("Failed to get current exe path");
     let exe_dir = exe_path.parent().expect("Failed to get exe parent");
@@ -243,26 +256,37 @@ pub fn dump_audio_to_file(samples: &[f32], filename: &str) {
 
 pub async fn recording_task(
     mut rx: mpsc::Receiver<String>,
-    path: String,
+    path: PathBuf,
     should_save: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let _ = tokio::fs::create_dir_all("transcriptions").await;
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await
-        .expect("Failed to open transcription file");
-
     let mut count = 0;
+    let mut file: Option<File> = None;
+    tracing::info!("Path is: {:?}", path);
     while let Some(text) = rx.recv().await {
         if should_save.load(std::sync::atomic::Ordering::Relaxed) {
-            count += 1;
-            let suffix = if count % 4 == 0 { ".\n" } else { " " };
-            let _ = file
-                .write_all(format!("{}{}", text, suffix).as_bytes())
-                .await;
-            let _ = file.flush().await;
+            if file.is_none() {
+                if let Some(parent) = Path::new(&path).parent() {
+                    let _ = create_dir_all(parent).await;
+                }
+                let f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .await
+                    .expect("Failed to open transcription file");
+                file = Some(f);
+            }
+            if let Some(ref mut f) = file {
+                count += 1;
+                let suffix = if count % 4 == 0 { ".\n" } else { " " };
+                let output = format!("{}{}", text, suffix);
+                if let Err(e) = f.write_all(output.as_bytes()).await {
+                    eprintln!("Write error: {}", e);
+                }
+                let _ = f.flush().await;
+            }
+        } else {
+            file = None;
         }
     }
 }
@@ -350,22 +374,41 @@ pub fn start_test() -> std::sync::mpsc::Receiver<Result<String, String>> {
     std::thread::Builder::new()
         .name("pipeline-test".into())
         .spawn(move || {
-            let result = std::panic::catch_unwind(run_test_inner);
+            let current_exe = std::env::current_exe().expect("Failed to get self path");
 
-            let final_result = match result {
-                Ok(Ok(text)) => Ok(text),
-                Ok(Err(e)) => Err(e),
-                Err(panic) => {
-                    let msg = panic
-                        .downcast_ref::<String>()
-                        .cloned()
-                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "Unknown panic".to_string());
-                    Err(format!("Pipeline panicked: {}", msg))
+            let output = Command::new(current_exe)
+                .env("RUN_PIPELINE_TEST", "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+
+                    if out.status.success() {
+                        if let Some(res) = stdout.strip_prefix("TEST_OK:") {
+                            let _ = tx.send(Ok(res.to_string()));
+                        } else {
+                            let _ = tx.send(Ok(stdout));
+                        }
+                    } else {
+                        let error_msg = if let Some(panic_idx) = stderr.find("panic") {
+                            stderr[panic_idx..].to_string()
+                        } else if let Some(last_line) = stderr.lines().last() {
+                            format!("Process exited with error. Last log: {}", last_line)
+                        } else {
+                            "Unknown process crash".to_string()
+                        };
+
+                        let _ = tx.send(Err(error_msg));
+                    }
                 }
-            };
-
-            let _ = tx.send(final_result);
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Failed to spawn test: {}", e)));
+                }
+            }
         })
         .expect("Failed to spawn test thread");
 
@@ -373,7 +416,7 @@ pub fn start_test() -> std::sync::mpsc::Receiver<Result<String, String>> {
 }
 
 // Mini runtime testing before starting the app.
-fn run_test_inner() -> Result<String, String> {
+pub async fn run_test_inner() -> Result<String, String> {
     static TEST_WAV: &[u8] = include_bytes!("./assets/test.wav");
     let samples = decode_wav(TEST_WAV)?;
 
@@ -391,105 +434,85 @@ fn run_test_inner() -> Result<String, String> {
         return Err("VAD produced no chunks — no speech detected".into());
     }
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("Failed to build runtime: {}", e))?;
+    use crate::types::TranscriptEvent;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
 
-    rt.block_on(async move {
-        use crate::types::TranscriptEvent;
-        use std::sync::Arc;
-        use tokio::sync::{mpsc, oneshot};
+    let (pass1_tx, pass1_rx) = mpsc::channel(32);
+    let (pass2_tx, pass2_rx) = mpsc::channel(32);
+    let (event_tx1, mut event_rx1) = mpsc::channel::<TranscriptEvent>(32);
+    let (event_tx2, mut event_rx2) = mpsc::channel::<TranscriptEvent>(32);
+    let (ready_tx1, ready_rx1) = oneshot::channel();
+    let (ready_tx2, ready_rx2) = oneshot::channel();
 
-        let (pass1_tx, pass1_rx) = mpsc::channel(32);
-        let (pass2_tx, pass2_rx) = mpsc::channel(32);
-        let (event_tx1, mut event_rx1) = mpsc::channel::<TranscriptEvent>(32);
-        let (event_tx2, mut event_rx2) = mpsc::channel::<TranscriptEvent>(32);
-        let (ready_tx1, ready_rx1) = oneshot::channel();
-        let (ready_tx2, ready_rx2) = oneshot::channel();
+    std::thread::Builder::new()
+        .name("test-whisper-pass1".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(crate::whisper::whisper::pass1_task(
+                ready_tx1, pass1_rx, event_tx1,
+            ));
+        })
+        .map_err(|e| format!("Failed to spawn pass1 thread: {}", e))?;
 
-        std::thread::Builder::new()
-            .name("test-whisper-pass1".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(crate::whisper::whisper::pass1_task(
-                    ready_tx1, pass1_rx, event_tx1,
-                ));
-            })
-            .map_err(|e| format!("Failed to spawn pass1 thread: {}", e))?;
+    std::thread::Builder::new()
+        .name("test-whisper-pass2".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(crate::whisper::whisper::pass2_task(
+                ready_tx2, pass2_rx, event_tx2,
+            ));
+        })
+        .map_err(|e| format!("Failed to spawn pass2 thread: {}", e))?;
 
-        std::thread::Builder::new()
-            .name("test-whisper-pass2".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(crate::whisper::whisper::pass2_task(
-                    ready_tx2, pass2_rx, event_tx2,
-                ));
-            })
-            .map_err(|e| format!("Failed to spawn pass2 thread: {}", e))?;
+    ready_rx1.await.map_err(|_| "pass1 failed to signal ready".to_string())?;
+    ready_rx2.await.map_err(|_| "pass2 failed to signal ready".to_string())?;
 
-        ready_rx1
-            .await
-            .map_err(|_| "pass1 failed to signal ready".to_string())?;
-        ready_rx2
-            .await
-            .map_err(|_| "pass2 failed to signal ready".to_string())?;
+    for chunk in chunks {
+        let is_last = chunk.is_last;
+        pass1_tx.send(chunk).await.map_err(|_| "pass1 channel closed".to_string())?;
+        if !is_last {
+            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+        }
+    }
 
-        for chunk in chunks {
-            let is_last = chunk.is_last;
-            pass1_tx
-                .send(chunk)
-                .await
-                .map_err(|_| "pass1 channel closed".to_string())?;
-            if !is_last {
-                tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+    let pass1_timeout = tokio::time::Duration::from_secs(30);
+    let pass1_text = match tokio::time::timeout(pass1_timeout, event_rx1.recv()).await {
+        Ok(Some(TranscriptEvent::Final { text, .. } | TranscriptEvent::Partial { text, .. })) => text,
+        _ => String::new(),
+    };
+
+    let full_audio = Arc::new(samples);
+    pass2_tx.send(crate::types::PhraseChunk {
+        phrase_id: 0,
+        chunk_id: 0,
+        is_last: true,
+        short: false,
+        data: full_audio,
+    }).await.map_err(|_| "pass2 channel closed".to_string())?;
+
+    let pass2_timeout = tokio::time::Duration::from_secs(120);
+    match tokio::time::timeout(pass2_timeout, event_rx2.recv()).await {
+        Ok(Some(TranscriptEvent::Final { text, .. })) => {
+            let clean = text.replace("[BLANK_AUDIO]", "").trim().to_string();
+            if clean.is_empty() && !pass1_text.is_empty() {
+                Ok(format!("[pass1 fallback] {}", pass1_text))
+            } else if clean.is_empty() {
+                Err("Both passes returned empty".into())
+            } else {
+                Ok(text)
             }
         }
-
-        let pass1_timeout = tokio::time::Duration::from_secs(30);
-        let pass1_text = match tokio::time::timeout(pass1_timeout, event_rx1.recv()).await {
-            Ok(Some(
-                TranscriptEvent::Final { text, .. } | TranscriptEvent::Partial { text, .. },
-            )) => text,
-            _ => String::new(),
-        };
-
-        let full_audio = Arc::new(samples);
-        let phrase_id = 0u32;
-        pass2_tx
-            .send(crate::types::PhraseChunk {
-                phrase_id,
-                chunk_id: 0,
-                is_last: true,
-                short: false,
-                data: full_audio,
-            })
-            .await
-            .map_err(|_| "pass2 channel closed".to_string())?;
-
-        let pass2_timeout = tokio::time::Duration::from_secs(120);
-        match tokio::time::timeout(pass2_timeout, event_rx2.recv()).await {
-            Ok(Some(TranscriptEvent::Final { text, .. })) => {
-                let clean = text.replace("[BLANK_AUDIO]", "").trim().to_string();
-                if clean.is_empty() && !pass1_text.is_empty() {
-                    Ok(format!("[pass1 fallback] {}", pass1_text))
-                } else if clean.is_empty() {
-                    Err("Both passes returned empty".into())
-                } else {
-                    Ok(text)
-                }
-            }
-            Ok(Some(TranscriptEvent::Partial { text, .. })) => Ok(format!("[partial] {}", text)),
-            Ok(None) => Err("pass2 channel closed without result".into()),
-            Err(_) => Err("pass2 timeout — accurate model took too long".into()),
-        }
-    })
+        Ok(Some(TranscriptEvent::Partial { text, .. })) => Ok(format!("[partial] {}", text)),
+        Ok(None) => Err("pass2 channel closed without result".into()),
+        Err(_) => Err("pass2 timeout — accurate model took too long".into()),
+    }
 }
 
 fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {

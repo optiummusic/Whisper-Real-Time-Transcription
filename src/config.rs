@@ -16,7 +16,7 @@ pub const VAD_CHUNK_SIZE: usize = 512;
 
 pub const STREAM_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
 pub const PASS1_MIN_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
-pub const STITCH_MIN_SAMPLES: usize = (TARGET_SAMPLE_RATE as f32 * 1.5) as usize;
+pub const STITCH_MIN_SAMPLES: usize = (TARGET_SAMPLE_RATE as f32 / 2.5) as usize;
 pub const VAD_CHUNK_DURATION_S: f32 = VAD_CHUNK_SIZE as f32 / TARGET_SAMPLE_RATE as f32;
 
 static SPEECH_PROB_X1000: AtomicU32 = AtomicU32::new(500);

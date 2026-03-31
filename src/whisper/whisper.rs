@@ -23,7 +23,7 @@ pub async fn pass1_task(
     event_tx: mpsc::Sender<TranscriptEvent>,
 ) {
     let mut stream = StreamInfo::new();
-    let (job_tx, mut job_rx) = tokio::sync::mpsc::channel::<Pass1Job>(3);
+    let (job_tx, mut job_rx) = tokio::sync::mpsc::channel::<Pass1Job>(1);
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
 
     std::thread::spawn(move || {
@@ -38,8 +38,9 @@ pub async fn pass1_task(
                 let current_cfg = config::startup();
 
                 let mut ctx_params = WhisperContextParameters::default();
-                ctx_params.use_gpu(current_cfg.use_gpu_fast);
-                ctx_params.gpu_device(current_cfg.gpu_device_fast);
+                let use_gpu = current_cfg.use_gpu_fast;
+                ctx_params.use_gpu(use_gpu);
+                if use_gpu { ctx_params.gpu_device(current_cfg.gpu_device_fast); }
 
                 let whisper_path = match find_first_file_in_dir("models/whisper-fast", "bin") {
                     Some(path) => path,
@@ -84,6 +85,7 @@ pub async fn pass1_task(
             dump_audio_to_file(&job.audio, &debug_filename);
 
             let (text, _) = run_whisper(state, &job.audio, &WhisperConfig::fast());
+
             let elapsed = t0.elapsed();
             let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
             tracing::info!(
@@ -194,8 +196,9 @@ pub async fn pass2_task(
                 let current_cfg = config::startup();
 
                 let mut ctx_params = WhisperContextParameters::default();
-                ctx_params.use_gpu(current_cfg.use_gpu_acc);
-                ctx_params.gpu_device(current_cfg.gpu_device_acc);
+                let use_gpu = current_cfg.use_gpu_acc;
+                ctx_params.use_gpu(use_gpu);
+                if use_gpu {ctx_params.gpu_device(current_cfg.gpu_device_acc);}
 
                 let whisper_path = match find_first_file_in_dir("models/whisper-accurate", "bin") {
                     Some(path) => path,
@@ -339,20 +342,20 @@ pub async fn pass2_task(
 }
 
 pub fn disable_whisper_log() {
-    // #[cfg(target_os = "windows")]
-    // return;
-    // unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
+    #[cfg(target_os = "windows")]
+    return;
+    unsafe { whisper_rs::set_log_callback(Some(whisper_log_callback), std::ptr::null_mut()); }
 }
 
-// unsafe extern "C" fn whisper_log_callback(
-//     // For some reason compilation for windows breaks if level value is unsigned, and it asks for integer.
-//     #[cfg(target_os = "windows")]
-//     _level: i32,
-//     #[cfg(target_os = "linux")]
-//     _level: u32,
-//     _msg: *const std::os::raw::c_char,
-//     _user_data: *mut std::ffi::c_void,
-// ) {}
+unsafe extern "C" fn whisper_log_callback(
+    // For some reason compilation for windows breaks if level value is unsigned, and it asks for integer.
+    #[cfg(target_os = "windows")]
+    _level: i32,
+    #[cfg(not(target_os = "windows"))]
+    _level: u32,
+    _msg: *const std::os::raw::c_char,
+    _user_data: *mut std::ffi::c_void,
+) {}
 
 pub struct StreamInfo {
     current_id: Option<u32>,
@@ -429,12 +432,9 @@ impl StreamInfo {
             return true;
         }
         if Some(phrase_id) == self.closed_id {
+            println!("Phrase closed id");
             return false;
         }
-        if let Some(cur) = self.current_id
-            && phrase_id < cur {
-                return false;
-            }
         true
     }
     fn reset(&mut self, new_id: u32) {
