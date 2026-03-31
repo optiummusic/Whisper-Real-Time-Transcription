@@ -2,7 +2,7 @@
 # ONLY USE SILERO VAD VERSION 4!
 A fully offline, real-time speech transcription tool written in Rust. Built around a two-pass Whisper pipeline with Silero VAD for voice detection — designed to help understand foreign-language audio with low latency.
 
-https://github.com/user-attachments/assets/fe91eb4a-0f2a-47c8-8536-2a978c4a61de
+![2026-03-3122-20-54-ezgif com-video-to-gif-converter](https://github.com/user-attachments/assets/1b783e20-d088-4bc5-a6fd-f0c377fbfc5e)
 
 ## How it works
 
