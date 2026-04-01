@@ -286,7 +286,7 @@ fn create_audio_stream(
         partial_len: None,
     };
 
-    let mut sample_metrics = Vec::with_capacity(100);
+    let mut sample_metrics = Vec::with_capacity(1000);
 
     let stream = device.build_input_stream(
         &config.into(),

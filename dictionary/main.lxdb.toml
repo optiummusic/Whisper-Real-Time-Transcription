@@ -1,0 +1,166 @@
+# ─── dictionary/main.lxdb.toml ────────────────────────────────────────────────
+# Source dictionary for the LXDB binary format.
+#
+# To compile:
+#   lxdb compile dictionary/main.lxdb.toml dictionary/main.lxdb
+#
+# The compiled .lxdb file is what gets loaded at runtime.
+# This TOML file is the human-editable source of truth.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[meta]
+version     = 1
+description = "Main translation dictionary for Whisper Real-Time Transcription"
+
+# BCP-47 language codes → human-readable names.
+# Add/remove languages here. The compiler handles all wiring automatically.
+[languages]
+en = "English"
+uk = "Ukrainian"
+de = "German"
+fr = "French"
+es = "Spanish"
+pl = "Polish"
+ru = "Russian"
+
+# ─── Concepts ─────────────────────────────────────────────────────────────────
+# Each [[concepts]] block is ONE semantic concept.
+# Keys are BCP-47 language codes from [languages] above.
+# Missing languages are silently skipped (no translation stored for that lang).
+# Multi-word phrases are allowed — they hash as a unit (ngram support).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[concepts]]
+en = "hello"
+uk = "привіт"
+de = "hallo"
+fr = "bonjour"
+es = "hola"
+pl = "cześć"
+ru = "привет"
+
+[[concepts]]
+en = "good morning"
+uk = "доброго ранку"
+de = "guten morgen"
+fr = "bonjour"
+es = "buenos días"
+pl = "dzień dobry"
+ru = "доброе утро"
+
+[[concepts]]
+en = "good evening"
+uk = "добрий вечір"
+de = "guten abend"
+fr = "bonsoir"
+es = "buenas noches"
+pl = "dobry wieczór"
+ru = "добрый вечер"
+
+[[concepts]]
+en = "thank you"
+uk = "дякую"
+de = "danke"
+fr = "merci"
+es = "gracias"
+pl = "dziękuję"
+ru = "спасибо"
+
+[[concepts]]
+en = "yes"
+uk = "так"
+de = "ja"
+fr = "oui"
+es = "sí"
+pl = "tak"
+ru = "да"
+
+[[concepts]]
+en = "no"
+uk = "ні"
+de = "nein"
+fr = "non"
+es = "no"
+pl = "nie"
+ru = "нет"
+
+[[concepts]]
+en = "please"
+uk = "будь ласка"
+de = "bitte"
+fr = "s'il vous plaît"
+es = "por favor"
+pl = "proszę"
+ru = "пожалуйста"
+
+[[concepts]]
+en = "sorry"
+uk = "вибачте"
+de = "entschuldigung"
+fr = "désolé"
+es = "lo siento"
+pl = "przepraszam"
+ru = "извините"
+
+[[concepts]]
+en = "water"
+uk = "вода"
+de = "wasser"
+fr = "eau"
+es = "agua"
+pl = "woda"
+ru = "вода"
+
+[[concepts]]
+en = "house"
+uk = "будинок"
+de = "haus"
+fr = "maison"
+es = "casa"
+pl = "dom"
+ru = "дом"
+
+[[concepts]]
+en = "cat"
+uk = "кіт"
+de = "katze"
+fr = "chat"
+es = "gato"
+pl = "kot"
+ru = "кот"
+
+[[concepts]]
+en = "dog"
+uk = "собака"
+de = "hund"
+fr = "chien"
+es = "perro"
+pl = "pies"
+ru = "собака"
+
+[[concepts]]
+en = "one"
+uk = "один"
+de = "eins"
+fr = "un"
+es = "uno"
+pl = "jeden"
+ru = "один"
+
+[[concepts]]
+en = "two"
+uk = "два"
+de = "zwei"
+fr = "deux"
+es = "dos"
+pl = "dwa"
+ru = "два"
+
+[[concepts]]
+en = "three"
+uk = "три"
+de = "drei"
+fr = "trois"
+es = "tres"
+pl = "trzy"
+ru = "три"

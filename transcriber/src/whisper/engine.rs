@@ -44,8 +44,8 @@ pub fn run_whisper(
         SamplingStrategy::Greedy { best_of: 1 }
     };
     let mut params = FullParams::new(strategy);
-    let cfg_start = config::startup();
-    params.set_language(Some(&cfg_start.language));
+    let lang = config::source_lang();
+    params.set_language(Some(&lang));
     params.set_n_threads(cfg.n_threads);
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -67,11 +67,11 @@ pub fn run_whisper(
         params.set_initial_prompt(cfg.context_prompt);
     }
     let t0 = Instant::now();
-    tracing::info!("ENTER full pass={}", cfg.pass);
+    tracing::trace!("ENTER full pass={}", cfg.pass);
     if state.full(params, audio).is_err() {
         return (String::new(), 0);
     }
-    tracing::info!(
+    tracing::trace!(
         "EXIT full pass={} ms={}",
         cfg.pass,
         t0.elapsed().as_millis()
