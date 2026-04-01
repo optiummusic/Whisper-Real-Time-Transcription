@@ -322,7 +322,7 @@ pub async fn vad_task(
     let mut results: Vec<PhraseChunk> = Vec::with_capacity(4);
     ready_tx.send(()).ok();
 
-    const MAX_METRICS: usize = 100;
+    const MAX_METRICS: usize = 10000;
     let mut metric_buffer: Vec<u128> = Vec::with_capacity(MAX_METRICS);
 
     while let Some(audio_data) = rx.recv().await {

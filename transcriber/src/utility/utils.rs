@@ -129,8 +129,12 @@ pub fn models_are_identical() -> bool {
 
 pub fn get_base_dir() -> PathBuf {
     if let Some(pkg_dir) = option_env!("CARGO_MANIFEST_DIR") {
-        PathBuf::from(pkg_dir)
+        let path = PathBuf::from(pkg_dir);
+        // Если pkg_dir это .../translator/translator, 
+        // то parent() вернет .../translator/
+        path.parent().map(|p| p.to_path_buf()).unwrap_or(path)
     } else {
+        // Для release-бинарника логика остается прежней (рядом с exe)
         std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))

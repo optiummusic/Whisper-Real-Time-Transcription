@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+
+use lxdb::LxdbReader;
 
 // GUARDS
 /// When true, VAD task drains audio packets and emits nothing downstream.
@@ -13,6 +15,10 @@ pub static SINGLE_PASS: AtomicBool = AtomicBool::new(false);
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const VAD_CHUNK_SIZE: usize = 512;
+
+pub static CONFIG_VERSION: AtomicU32 = AtomicU32::new(0);
+pub static TARGET_LANG: OnceLock<RwLock<Arc<str>>> = OnceLock::new();
+pub static SOURCE_LANG: OnceLock<RwLock<Arc<str>>> = OnceLock::new();
 
 pub const STREAM_CHUNK_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
 pub const PASS1_MIN_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
@@ -74,6 +80,56 @@ pub fn get_device() -> String {
 }
 pub fn audio_gain() -> f32 {
     AUDIO_GAIN_X100.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+pub fn target_lang() -> Arc<str> {
+    TARGET_LANG.get_or_init(|| RwLock::new(Arc::from("en")))
+        .read().unwrap().clone()
+}
+
+pub fn source_lang() -> Arc<str> {
+    SOURCE_LANG.get_or_init(|| RwLock::new(Arc::from("ru")))
+        .read().unwrap().clone()
+}
+
+pub fn get_config_version() -> u32 {
+    CONFIG_VERSION.load(Ordering::Relaxed)
+}
+
+pub fn get_available_languages() -> Vec<(String, String)> {
+    let path = crate::utility::utils::get_base_dir()
+        .join("dictionary")
+        .join("main.lxdb");
+
+    if let Ok(data) = std::fs::read(path) {
+        if let Ok(r) = LxdbReader::new(&data) {
+            return r.languages()
+                .map(|(code, name)| (code.to_string(), name.to_string()))
+                .collect();
+        }
+    }
+    // Если файла нет или он сломан, возвращаем дефолт, чтобы UI не был пустым
+    vec![("en".into(), "English".into()), ("uk".into(), "Ukrainian".into())]
+}
+
+pub fn set_src_lang(v: String) {
+    {
+        let mut src = SOURCE_LANG.get_or_init(|| RwLock::new(Arc::from("ru")))
+            .write().unwrap();
+        *src = Arc::from(v);
+    }
+    // Сигнализируем об изменении
+    CONFIG_VERSION.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn set_tgt_lang(v: String) {
+    {
+        let mut tgt = TARGET_LANG.get_or_init(|| RwLock::new(Arc::from("en")))
+            .write().unwrap();
+        *tgt = Arc::from(v);
+    }
+    // Сигнализируем об изменении
+    CONFIG_VERSION.fetch_add(1, Ordering::SeqCst);
 }
 
 pub fn set_speech_probability(v: f32) {

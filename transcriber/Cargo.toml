@@ -1,0 +1,66 @@
+[package]
+name = "translator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+lxdb = { path = "../lxdb" }
+
+
+cpal = "0.17.3"
+tokio = { version = "1.50", features = ["full"] }
+ort = {version = "2.0.0-rc.12"}
+ndarray = "0.17.2"
+whisper-rs = { version= "0.16.0" }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "registry"] }
+console-subscriber = "0.5.0"
+eframe = "0.33.3"
+parking_lot = "0.12.5"
+hound = "3.5"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.0.7"
+mimalloc = "0.1.48"
+thread-priority = "3.0.0"
+core_affinity = "0.8.3"
+rubato = "1.0.1"
+audioadapter-buffers = "2.0.0"
+wgpu = "29.0.0"
+pollster = "0.4.0"
+chrono = { version = "0.4.44", features = ["std", "clock", "serde"] }
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", features = ["ring"] }
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "native-tls"] }
+
+[features]
+default = ["vulkan"]
+vulkan   = ["whisper-rs/vulkan"]
+metal    = ["whisper-rs/metal"]
+cuda     = ["whisper-rs/cuda"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "stream_bench"
+harness = true
+
+[[bench]]
+name = "vad_bench"
+harness = false
+
+[[bench]]
+name = "whisper_bench"
+harness = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[lib]
+name = "translator"
+path = "src/lib.rs"

@@ -279,7 +279,7 @@ struct App {
     is_running: bool,
     preview_stream: Option<cpal::Stream>,
     pending_config: config::StartupConfig,
-    available_languages: Vec<(&'static str, &'static str)>,
+    available_languages: Vec<(String, String)>,
     available_gpus: Vec<(i32, String)>,
 
     save_transcription: Arc<AtomicBool>,
@@ -410,12 +410,7 @@ impl App {
             is_running: false,
             preview_stream: preview,
             pending_config: cfg,
-            available_languages: vec![
-                ("en", "English"),
-                ("uk", "Ukrainian"),
-                ("ru", "Russian"),
-                ("auto", "Auto-detect"),
-            ],
+            available_languages: config::get_available_languages(),
             available_gpus: get_available_gpus(),
             save_transcription: save_flag,
             save_tx: None,
@@ -612,21 +607,35 @@ impl App {
                     ui.add_space(10.0);
 
                     ui.group(|ui| {
-                        ui.label(egui::RichText::new("Model Engine Settings").strong());
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new("Language Settings").strong());
+                            ui.add_space(4.0);
 
-                        ui.horizontal(|ui| {
-                            ui.label("Target Language:");
-                            egui::ComboBox::from_id_salt("lang_select")
-                                .selected_text(self.pending_config.language.clone())
-                                .show_ui(ui, |ui| {
-                                    for (code, name) in &self.available_languages {
-                                        ui.selectable_value(
-                                            &mut self.pending_config.language,
-                                            code.to_string(),
-                                            *name,
-                                        );
-                                    }
-                                });
+                            ui.horizontal(|ui| {
+                                ui.label("Whisper Source:");
+                                egui::ComboBox::from_id_salt("whisper_lang_select")
+                                    .selected_text(config::source_lang().to_string())
+                                    .show_ui(ui, |ui| {
+                                        for (code, name) in &self.available_languages {
+                                            if ui.selectable_label(config::source_lang().as_ref() == code, name).clicked() {
+                                                config::set_src_lang(code.clone());
+                                            }
+                                        }
+                                    });
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Translation Target:");
+                                egui::ComboBox::from_id_salt("target_lang_select")
+                                    .selected_text(config::target_lang().to_string())
+                                    .show_ui(ui, |ui| {
+                                        for (code, name) in &self.available_languages {
+                                            if ui.selectable_label(config::target_lang().as_ref() == code, name).clicked() {
+                                                config::set_tgt_lang(code.clone());
+                                            }
+                                        }
+                                    });
+                            });
                         });
 
                         ui.separator();
@@ -1005,6 +1014,30 @@ impl eframe::App for App {
                         .show(ui, |ui| {
                             ui.heading("Settings");
                             ui.add_space(8.0);
+
+                            let current_src = config::source_lang();
+                            let current_tgt = config::target_lang();
+                            ui.group(|ui| {
+                                ui.label("Whisper Language (Source):");
+                                ui.horizontal_wrapped(|ui| {
+                                    for (code, name) in &self.available_languages {
+                                        if ui.selectable_label(current_src.as_ref() == code, name).clicked() {
+                                            config::set_src_lang(code.clone());
+                                        }
+                                    }
+                                });
+                            });
+
+                            ui.group(|ui| {
+                                ui.label("Translation Language (Target):");
+                                ui.horizontal_wrapped(|ui| {
+                                    for (code, name) in &self.available_languages {
+                                        if ui.selectable_label(current_tgt.as_ref() == code, name).clicked() {
+                                            config::set_tgt_lang(code.clone());
+                                        }
+                                    }
+                                });
+                            });
 
                             ui.group(|ui| {
                                 ui.label(egui::RichText::new("Audio Input").strong());
