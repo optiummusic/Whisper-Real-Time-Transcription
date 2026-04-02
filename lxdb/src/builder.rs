@@ -92,15 +92,84 @@ impl<'a> Builder<'a> {
         let mut word_index: Vec<IndexEntry> = Vec::new();
 
         for (cid, concept) in self.source.concepts.iter().enumerate() {
-            for (&lang_code, &lang_id) in &self.lang_ids {
-                if let Some(word) = concept.get(lang_code) {
-                    let word_off = intern(&mut pool, &mut pool_map, word);
-                    // store in row
-                    concept_tbl[cid * row_size + lang_id as usize] = word_off;
-                    // emit index entry (one per surface form)
+            let cid_u32 = cid as u32;
+
+            use std::collections::HashSet;
+            let mut seen: HashSet<(u16, String)> = HashSet::new();
+
+            //BASE
+            for (lang, word) in &concept.forms {
+                let Some(&lang_id) = self.lang_ids.get(lang.as_str()) else {
+                    continue;
+                };
+
+                let norm = word.trim().to_lowercase();
+                if norm.is_empty() {
+                    continue;
+                }
+
+                if !seen.insert((lang_id, norm.clone())) {
+                    continue;
+                }
+
+                let word_off = intern(&mut pool, &mut pool_map, &norm);
+
+                concept_tbl[cid * row_size + lang_id as usize] = word_off;
+
+                word_index.push(IndexEntry {
+                    hash: word_key_hash(lang, &norm),
+                    concept_id: cid_u32,
+                    lang_id,
+                });
+            }
+
+            //GENERATED
+            for (lang, forms) in &concept.generated {
+                let Some(&lang_id) = self.lang_ids.get(lang.as_str()) else {
+                    continue;
+                };
+
+                for word in forms {
+                    let norm = word.trim().to_lowercase();
+                    if norm.is_empty() {
+                        continue;
+                    }
+
+                    if !seen.insert((lang_id, norm.clone())) {
+                        continue;
+                    }
+
+                    let _ = intern(&mut pool, &mut pool_map, &norm);
+
                     word_index.push(IndexEntry {
-                        hash:       word_key_hash(lang_code, word),
-                        concept_id: cid as u32,
+                        hash: word_key_hash(lang, &norm),
+                        concept_id: cid_u32,
+                        lang_id,
+                    });
+                }
+            }
+
+            //CUSTOM
+            for (lang, forms) in &concept.custom {
+                let Some(&lang_id) = self.lang_ids.get(lang.as_str()) else {
+                    continue;
+                };
+
+                for word in forms {
+                    let norm = word.trim().to_lowercase();
+                    if norm.is_empty() {
+                        continue;
+                    }
+
+                    if !seen.insert((lang_id, norm.clone())) {
+                        continue;
+                    }
+
+                    let _ = intern(&mut pool, &mut pool_map, &norm);
+
+                    word_index.push(IndexEntry {
+                        hash: word_key_hash(lang, &norm),
+                        concept_id: cid_u32,
                         lang_id,
                     });
                 }

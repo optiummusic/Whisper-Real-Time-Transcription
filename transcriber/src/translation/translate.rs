@@ -62,7 +62,7 @@ impl LxdbDict {
 pub struct Translator {
     event:         mpsc::Receiver<TranscriptEvent>,
     send:          mpsc::Sender<TranslationEvent>,
-    dict:          Arc<parking_lot::RwLock<Option<LxdbDict>>>,
+    dicts:         Arc<parking_lot::RwLock<Vec<LxdbDict>>>,
     unresolved_tx: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
@@ -71,56 +71,77 @@ impl Translator {
         event: mpsc::Receiver<TranscriptEvent>,
         send:  mpsc::Sender<TranslationEvent>,
     ) -> Self {
-        let dict_path = Self::dict_path();
-        tracing::info!("LXDB path: {:?}", dict_path);
+        let dict_dir = Self::dict_dir();
+        tracing::info!("LXDB directory: {:?}", dict_dir);
 
-        let initial = Self::try_load(&dict_path, "uk", "en");
-        let dict    = Arc::new(parking_lot::RwLock::new(initial));
+        let initial = Self::load_all_dicts(&dict_dir, &config::source_lang(), &config::target_lang());
+        let dicts   = Arc::new(parking_lot::RwLock::new(initial));
 
         let (unresolved_tx, unresolved_rx) = tokio::sync::mpsc::unbounded_channel();
         Self::spawn_unresolved_worker(unresolved_rx);
 
-        let t = Self { event, send, dict: Arc::clone(&dict), unresolved_tx };
-        t.spawn_dict_watcher(dict_path);
+        let t = Self { event, send, dicts: Arc::clone(&dicts), unresolved_tx };
+        t.spawn_dict_watcher(dict_dir);
         t
     }
 
-    fn dict_path() -> PathBuf {
-        get_base_dir().join("dictionary").join("main.lxdb")
+    fn dict_dir() -> PathBuf {
+        get_base_dir().join("dictionary")
     }
 
-    fn try_load(path: &Path, src: &str, tgt: &str) -> Option<LxdbDict> {
-        match LxdbDict::open(path, src, tgt) {
-            Ok(d)  => Some(d),
-            Err(e) => { tracing::warn!("LxdbDict load failed: {e}"); None }
+    fn load_all_dicts(dir: &Path, src: &str, tgt: &str) -> Vec<LxdbDict> {
+        let mut loaded = Vec::new();
+        
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            tracing::warn!("Could not read dictionary directory: {:?}", dir);
+            return loaded;
+        };
+
+        let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        paths.sort_by(|a, b| {
+            let a_is_main = a.file_name().map_or(false, |n| n == "main.lxdb");
+            let b_is_main = b.file_name().map_or(false, |n| n == "main.lxdb");
+            if a_is_main { std::cmp::Ordering::Less }
+            else if b_is_main { std::cmp::Ordering::Greater }
+            else { a.cmp(b) }
+        });
+
+        for path in paths {
+            if path.extension().map_or(false, |ext| ext == "lxdb") {
+                if let Ok(d) = LxdbDict::open(&path, src, tgt) {
+                    loaded.push(d);
+                }
+            }
         }
+        loaded
     }
 
     // ── Hot-reload watcher ────────────────────────────────────────────────────
 
-    fn spawn_dict_watcher(&self, path: PathBuf) {
-        let dict = Arc::clone(&self.dict);
+    fn spawn_dict_watcher(&self, dir: PathBuf) {
+        let dicts_ptr = Arc::clone(&self.dicts);
         std::thread::Builder::new()
             .name("lxdb-watcher".into())
             .spawn(move || {
-                let mut last_mtime = None;
                 let mut last_version = config::get_config_version();
+                let mut last_scan_time: Option<std::time::SystemTime> = None;
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    std::thread::sleep(std::time::Duration::from_secs(3));
 
                     let current_version = config::get_config_version();
-                    let mtime = std::fs::metadata(&path).ok()
-                        .and_then(|m| m.modified().ok());
-
-                    if (mtime.is_some() && mtime != last_mtime) || current_version != last_version {
-                        last_mtime = mtime;
+                    let current_mtime = std::fs::metadata(&dir).ok().and_then(|m| m.modified().ok());
+                    
+                    if current_version != last_version || current_mtime != last_scan_time {
                         last_version = current_version;
+                        last_scan_time = current_mtime;
+
                         let src = config::source_lang();
                         let tgt = config::target_lang();
 
-                        if let Some(fresh) = Self::try_load(&path, &src, &tgt) {
-                            *dict.write() = Some(fresh);
-                            tracing::info!("LXDB Hot-Reloaded: {} -> {}", src, tgt);
+                        let fresh = Self::load_all_dicts(&dir, &src, &tgt);
+                        if !fresh.is_empty() {
+                            *dicts_ptr.write() = fresh;
+                            tracing::info!("LXDB Buffer reloaded. Total dicts: {}", dicts_ptr.read().len());
                         }
                     }
                 }
@@ -193,86 +214,58 @@ impl Translator {
         buffer:    Arc<TranslationBuffer>,
     ) {
         let t0 = std::time::Instant::now();
-        
         let raw_words: Vec<&str> = text.split_whitespace().collect();
         if raw_words.is_empty() { return; }
 
-        let cleaned_words: Vec<String> = raw_words.iter()
-            .map(|w| Self::clean(w))
-            .collect();
-
-        tracing::debug!(
-            pid = phrase_id, 
-            word_count = raw_words.len(), 
-            "Start translation: '{}'", text
-        );
-
+        let cleaned_words: Vec<String> = raw_words.iter().map(|w| Self::clean(w)).collect();
         let ui_notify = buffer.register(phrase_id).await;
-        let mut out: Vec<TranslationEvent> = Vec::with_capacity(raw_words.len());
-
-        let dict_snap = self.dict.read().clone();
         
+        let dicts_snap = self.dicts.read().clone();
+        
+        let mut out: Vec<TranslationEvent> = Vec::with_capacity(raw_words.len());
         let mut i = 0;
-        let mut hits = 0;
-        let mut misses = 0;
 
         while i < raw_words.len() {
             if cleaned_words[i].is_empty() {
-                out.push(TranslationEvent::Translate { 
-                    phrase_id, word_index: i, span: 1, text: String::new() 
-                });
+                out.push(TranslationEvent::Translate { phrase_id, word_index: i, span: 1, text: String::new() });
                 i += 1;
                 continue;
             }
 
-            let (translated_text, span) = self.find_best_ngram(&dict_snap, &cleaned_words, i);
+            let (translated_text, span) = self.find_best_ngram(&dicts_snap, &cleaned_words, i);
             
-            if !translated_text.is_empty() {
-                hits += 1;
-            } else {
-                misses += 1;
+            if translated_text.is_empty() {
                 self.record_miss(&cleaned_words[i]);
             }
 
-            out.push(TranslationEvent::Translate { 
-                phrase_id, 
-                word_index: i, 
-                span, 
-                text: translated_text 
-            });
-            
+            out.push(TranslationEvent::Translate { phrase_id, word_index: i, span, text: translated_text });
             i += span;
         }
 
         for evt in out { let _ = self.send.send(evt).await; }
         ui_notify.notify_one();
 
-        let elapsed = t0.elapsed();
-        tracing::info!(
-            pid = phrase_id,
-            "Finished translation in {:?}. Hits: {}, Misses: {}", 
-            elapsed, hits, misses
-        );
-        performance(elapsed.as_secs_f32() * 1000.0, format!("translate_phrase_{phrase_id}"));
+        performance(t0.elapsed().as_secs_f32() * 1000.0, format!("translate_phrase_{phrase_id}"));
     }
 
-    fn find_best_ngram(&self, dict: &Option<LxdbDict>, cleaned_words: &[String], start_idx: usize) -> (String, usize) {
-        let Some(d) = dict else { return (String::new(), 1); };
+    fn find_best_ngram(&self, dicts: &[LxdbDict], cleaned_words: &[String], start_idx: usize) -> (String, usize) {
+        if dicts.is_empty() { return (String::new(), 1); }
 
         for window in (1..=MAX_NGRAM).rev() {
             if start_idx + window > cleaned_words.len() { continue; }
 
             let slice = &cleaned_words[start_idx..start_idx + window];
-            
             if slice.iter().any(|s| s.is_empty()) { continue; }
-
             let phrase = slice.join(" ");
             
-            tracing::trace!("Trying n-gram (len {}): '{}'", window, phrase);
-
-            if let Some(translation) = d.lookup(&phrase) {
-                tracing::debug!("HIT: '{}' -> '{}' (span: {})", phrase, translation, window);
-                return (translation, window);
+            for (idx, dict) in dicts.iter().enumerate() {
+                if let Some(translation) = dict.lookup(&phrase) {
+                    tracing::debug!(
+                        "HIT: '{}' -> '{}' (span: {}, dict_idx: {})", 
+                        phrase, translation, window, idx
+                    );
+                    return (translation, window);
+                }
             }
         }
 
