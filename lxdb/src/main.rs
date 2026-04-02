@@ -11,12 +11,12 @@
 //   cargo run -p lxdb -- dump    dictionary/main.lxdb
 // ─────────────────────────────────────────────────────────────────────────────
 
-use std::path::PathBuf;
+use std::path::{PathBuf};
 
 // Используем библиотечную часть ЭТОГО ЖЕ крейта.
 // Cargo автоматически линкует lib и bin внутри одного [package].
 use lxdb::{compile_file, load_file, builder::stats_from, LxdbReader, LxdbToml};
-
+use std::io::{self, Write};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -43,39 +43,54 @@ fn print_usage() {
 // Выходной путь по умолчанию: заменяем .toml → .lxdb в имени входного файла.
 
 fn cmd_compile(args: &[String]) {
-    let (input, output) = match args {
-        [i]    => {
-            let out = i.strip_suffix(".toml")
-                .map(|s| format!("{s}.lxdb"))
-                .unwrap_or_else(|| format!("{i}.lxdb"));
-            (PathBuf::from(i), PathBuf::from(out))
-        }
-        [i, o] => (PathBuf::from(i), PathBuf::from(o)),
-        _ => {
+    let input_path = match args.get(0) {
+        Some(i) => PathBuf::from(i),
+        None => {
             eprintln!("usage: lxdb compile <input.toml> [output.lxdb]");
             std::process::exit(1);
         }
     };
 
-    // Компиляция
-    let blob = compile_file(&input).unwrap_or_else(|e| {
+    let output_path = if let Some(o) = args.get(1) {
+        PathBuf::from(o)
+    } else {
+        // Автоматическая генерация имени: берем имя файла без расширений
+        let stem = input_path.file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.split('.').next().unwrap_or(s))
+            .unwrap_or("out");
+
+        print!("Enter database name [default: {}]: ", stem);
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let trimmed = input.trim();
+
+        let final_stem = if trimmed.is_empty() { stem } else { trimmed };
+        
+        let mut path = input_path.clone();
+        path.set_file_name(final_stem);
+        path.set_extension("lxdb");
+        path
+    };
+
+    let blob = compile_file(&input_path).unwrap_or_else(|e| {
         eprintln!("compile error: {e}");
         std::process::exit(1);
     });
 
-    // Запись на диск
-    std::fs::write(&output, &blob).unwrap_or_else(|e| {
+    std::fs::write(&output_path, &blob).unwrap_or_else(|e| {
         eprintln!("write error: {e}");
         std::process::exit(1);
     });
 
-    // Статистика — читаем TOML ещё раз только чтобы получить source-level счётчики
-    let toml_text = std::fs::read_to_string(&input).unwrap();
+    let toml_text = std::fs::read_to_string(&input_path).unwrap();
     let source: LxdbToml = toml::from_str(&toml_text).unwrap();
     let stats = stats_from(&blob, &source);
 
-    println!("✓  {stats}");
-    println!("   → {output:?}");
+    println!("\n✓  {stats}");
+    println!("   → {:?}", output_path);
 }
 
 // ── info ──────────────────────────────────────────────────────────────────────

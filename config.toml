@@ -1,4 +1,5 @@
-language = "uk"
+source_lang = "de"
+target_lang = "ru"
 device = "pipewire"
 use_gpu_fast = true
 use_gpu_acc = true
@@ -11,4 +12,4 @@ min_phrase_secs = 2.0
 max_phrase_secs = 12.0
 gpu_device_fast = 0
 gpu_device_acc = 0
-audio_gain = 4.3
+audio_gain = 4.19

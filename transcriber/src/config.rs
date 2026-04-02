@@ -175,7 +175,6 @@ pub fn set_audio_gain(v: f32) {
 
 #[derive(Debug, Clone)]
 pub struct StartupConfig {
-    pub language: String,
     pub use_gpu_fast: bool,
     pub use_gpu_acc: bool,
     pub gpu_device_fast: i32,
@@ -188,7 +187,6 @@ static STARTUP_DATA: OnceLock<RwLock<StartupConfig>> = OnceLock::new();
 fn startup_storage() -> &'static RwLock<StartupConfig> {
     STARTUP_DATA.get_or_init(|| {
         RwLock::new(StartupConfig {
-            language: "en".to_string(),
             use_gpu_fast: true,
             use_gpu_acc: true,
             gpu_device_fast: 0,
@@ -203,7 +201,6 @@ pub fn startup() -> StartupConfig {
 }
 
 pub fn init(
-    language: String,
     use_gpu_fast: bool,
     use_gpu_acc: bool,
     gpu_fast: i32,
@@ -212,7 +209,6 @@ pub fn init(
 ) {
     let mut lock = startup_storage().write().unwrap();
     *lock = StartupConfig {
-        language,
         use_gpu_fast,
         use_gpu_acc,
         gpu_device_fast: gpu_fast,
@@ -225,7 +221,9 @@ pub fn init(
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 #[serde(default)]
 pub struct TomlConfig {
-    pub language: Option<String>,
+    pub source_lang: Option<String>,
+    pub target_lang: Option<String>,
+
     pub device: Option<String>,
     pub use_gpu_fast: Option<bool>,
     pub use_gpu_acc: Option<bool>,
@@ -295,8 +293,9 @@ pub fn load_from_toml(path: &str) {
         set_device(d);
     }
 
+    if let Some(v) = cfg.source_lang { set_src_lang(v); }
+    if let Some(v) = cfg.target_lang { set_tgt_lang(v); }
     init(
-        cfg.language.unwrap_or_else(|| "en".to_string()),
         cfg.use_gpu_fast.unwrap_or(true),
         cfg.use_gpu_acc.unwrap_or(true),
         cfg.gpu_device_fast.unwrap_or(0),
@@ -308,7 +307,6 @@ pub fn load_from_toml(path: &str) {
 pub fn save_to_toml(path: &str) {
     let current = startup();
     let cfg = TomlConfig {
-        language: Some(current.language),
         device: Some(get_device()),
         use_gpu_fast: Some(current.use_gpu_fast),
         use_gpu_acc: Some(current.use_gpu_acc),
@@ -322,6 +320,8 @@ pub fn save_to_toml(path: &str) {
         min_phrase_secs: Some(min_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
         max_phrase_secs: Some(max_phrase_samples() as f32 / TARGET_SAMPLE_RATE as f32),
         audio_gain: Some(audio_gain()),
+        source_lang: Some(source_lang().to_string()),
+        target_lang: Some(target_lang().to_string()),
         ..Default::default()
     };
     match toml::to_string_pretty(&cfg) {

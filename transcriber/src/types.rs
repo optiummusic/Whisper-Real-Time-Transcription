@@ -1,7 +1,7 @@
 use std::sync::Arc;
 pub type AudioPacket = Vec<f32>;
 use std::collections::HashMap;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 #[derive(Debug, Clone)]
 pub enum TranscriptEvent {
@@ -64,4 +64,25 @@ pub struct PhraseChunk {
     pub is_last: bool,
     pub short: bool,
     pub data: Arc<Vec<f32>>,
+}
+
+pub struct BackendArgs {
+    pub startup_rx: oneshot::Receiver<()>,
+    pub device_rx: oneshot::Receiver<String>,
+    pub event_tx: mpsc::Sender<TranscriptEvent>,
+    pub event_rx_main: mpsc::Receiver<TranscriptEvent>,
+    pub event_tx_ui: mpsc::Sender<TranscriptEvent>,
+    pub event_tx_translator: mpsc::Sender<TranscriptEvent>,
+    pub event_rx_translator: mpsc::Receiver<TranscriptEvent>,
+    pub translation_tx: mpsc::Sender<TranslationEvent>,
+    pub translation_buffer: Arc<TranslationBuffer>,
+}
+
+pub struct AppArgs {
+    pub event_rx: mpsc::Receiver<TranscriptEvent>,
+    pub translation_rx: mpsc::Receiver<TranslationEvent>,
+    pub translation_buffer: Arc<TranslationBuffer>,
+    pub device_tx: oneshot::Sender<String>,
+    pub handle: tokio::runtime::Handle,
+    pub startup_tx: oneshot::Sender<()>,
 }

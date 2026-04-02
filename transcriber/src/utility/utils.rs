@@ -4,9 +4,90 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
+use wgpu::{Backends, DeviceType, Instance, InstanceDescriptor};
 use std::process::Command;
 use tokio::fs::{File, OpenOptions, create_dir_all};
 use tokio::io::AsyncWriteExt;
+
+pub fn get_available_gpus() -> Vec<(i32, String)> {
+    let fallback_with_error =
+        |reason: &str| vec![(0, format!("Default Device (Auto-detect) [{}]", reason))];
+
+    let backends = if cfg!(target_os = "macos") {
+        Backends::METAL
+    } else {
+        Backends::VULKAN
+    };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
+        pollster::block_on(instance.enumerate_adapters(backends))
+    }));
+
+    let adapters = match result {
+        Ok(adapters) => adapters,
+        Err(panic_payload) => {
+            let reason = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+
+            tracing::warn!("Vulkan panic: {}", reason);
+            return fallback_with_error(&reason);
+        }
+    };
+    let mut temp_gpus = Vec::new();
+    let mut seen_pci_ids = std::collections::HashSet::new();
+
+    for adapter in adapters {
+        let info = adapter.get_info();
+
+        if info.device_type == DeviceType::Cpu {
+            continue;
+        }
+
+        let pci_id = (info.vendor, info.device);
+        if !seen_pci_ids.insert(pci_id) {
+            continue;
+        }
+
+        let device_type_str = match info.device_type {
+            DeviceType::DiscreteGpu => "(Discrete)",
+            DeviceType::IntegratedGpu => "(Integrated)",
+            DeviceType::VirtualGpu => "(Virtual)",
+            _ => "(Unknown)",
+        };
+
+        let display_name = format!("{} {}", info.name, device_type_str);
+        temp_gpus.push((info.device_type, display_name, info.device_pci_bus_id));
+    }
+
+    temp_gpus.sort_by(|a, b| match (a.0, b.0) {
+        (DeviceType::IntegratedGpu, DeviceType::DiscreteGpu) => std::cmp::Ordering::Less,
+        (DeviceType::DiscreteGpu, DeviceType::IntegratedGpu) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    let mut gpus = Vec::new();
+    for (index, (_, display_name, bus_id)) in temp_gpus.into_iter().enumerate() {
+        tracing::info!(
+            "Validated GPU: index={}, name={}, id={}",
+            index,
+            display_name,
+            bus_id
+        );
+        gpus.push((index as i32, display_name));
+    }
+
+    if gpus.is_empty() {
+        gpus.push((0, "Default Device (Auto-detect)".to_string()));
+    }
+
+    gpus
+}
 
 pub fn append_context(ctx: &mut String, text: &str, max_words: usize) {
     if text.is_empty() {
@@ -320,6 +401,12 @@ pub enum TestState {
     Idle,
     Running(std::sync::mpsc::Receiver<Result<String, String>>),
     Done(Result<String, String>),
+}
+
+impl Default for TestState {
+    fn default() -> Self {
+        TestState::Idle
+    }
 }
 
 pub enum ModelType {

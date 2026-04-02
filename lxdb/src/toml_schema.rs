@@ -1,32 +1,37 @@
-// ─── lxdb/src/toml_schema.rs ──────────────────────────────────────────────────
-// Serde структуры для десериализации исходного .lxdb.toml словаря.
-// ─────────────────────────────────────────────────────────────────────────────
-
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// Корневая структура .lxdb.toml файла.
 #[derive(Debug, Deserialize, Clone)]
 pub struct LxdbToml {
-    /// Метаданные словаря (версия, описание).
-    pub meta: Meta,
-    
-    /// Карта языков: BCP-47 код -> Человекочитаемое название.
-    /// Например: "uk" -> "Ukrainian".
-    pub languages: BTreeMap<String, String>,
-    
-    /// Список концептов. 
-    /// Каждый концепт — это словарь маппинга: код языка -> переведенное слово или фраза.
-    /// Используем #[serde(default)] на случай, если словарь пока пуст.
     #[serde(default)]
-    pub concepts: Vec<BTreeMap<String, String>>,
+    pub meta: Meta,
+
+    pub languages: BTreeMap<String, String>,
+
+    #[serde(default)]
+    pub concepts: Vec<Concept>,
 }
 
-/// Метаданные заголовка файла.
 #[derive(Debug, Deserialize, Clone)]
+pub struct Concept {
+    #[serde(flatten)]
+    pub forms: BTreeMap<String, String>,
+
+    /// [concepts.generated]
+    #[serde(default)]
+    pub generated: BTreeMap<String, Vec<String>>,
+
+    /// [concepts.custom]
+    #[serde(default)]
+    pub custom: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct Meta {
-    /// Версия формата (ожидается 1, проверяется в reader).
+    #[serde(default = "default_version")]
     pub version: u8,
-    /// Произвольное текстовое описание словаря.
+    #[serde(default)]
     pub description: String,
 }
+
+fn default_version() -> u8 { 1 }

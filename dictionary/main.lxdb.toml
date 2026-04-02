@@ -1,166 +1,168 @@
-# ─── dictionary/main.lxdb.toml ────────────────────────────────────────────────
-# Source dictionary for the LXDB binary format.
-#
-# To compile:
-#   lxdb compile dictionary/main.lxdb.toml dictionary/main.lxdb
-#
-# The compiled .lxdb file is what gets loaded at runtime.
-# This TOML file is the human-editable source of truth.
-# ─────────────────────────────────────────────────────────────────────────────
-
 [meta]
-version     = 1
+version = 1
 description = "Main translation dictionary for Whisper Real-Time Transcription"
 
-# BCP-47 language codes → human-readable names.
-# Add/remove languages here. The compiler handles all wiring automatically.
 [languages]
-en = "English"
-uk = "Ukrainian"
+pl = "Polish"
 de = "German"
+ru = "Russian"
+en = "English"
 fr = "French"
 es = "Spanish"
-pl = "Polish"
-ru = "Russian"
-
-# ─── Concepts ─────────────────────────────────────────────────────────────────
-# Each [[concepts]] block is ONE semantic concept.
-# Keys are BCP-47 language codes from [languages] above.
-# Missing languages are silently skipped (no translation stored for that lang).
-# Multi-word phrases are allowed — they hash as a unit (ngram support).
-# ─────────────────────────────────────────────────────────────────────────────
+uk = "Ukrainian"
 
 [[concepts]]
 en = "hello"
-uk = "привіт"
-de = "hallo"
-fr = "bonjour"
-es = "hola"
 pl = "cześć"
+es = "hola"
+fr = "bonjour"
+de = "hallo"
+uk = "привіт"
 ru = "привет"
+
+[concepts.custom]
+ru = ["приветик"]
+
+[[concepts]]
+ru = "идти"
+de = "gehen"
+en = "go"
+es = "ir"
+fr = "aller"
+pl = "Iść"
+uk = "йти"
 
 [[concepts]]
 en = "good morning"
-uk = "доброго ранку"
 de = "guten morgen"
-fr = "bonjour"
-es = "buenos días"
 pl = "dzień dobry"
+es = "buenos días"
 ru = "доброе утро"
+uk = "доброго ранку"
+fr = "bonjour"
 
 [[concepts]]
-en = "good evening"
+ru = "добрый вечер"
 uk = "добрий вечір"
 de = "guten abend"
-fr = "bonsoir"
+en = "good evening"
 es = "buenas noches"
+fr = "bonsoir"
 pl = "dobry wieczór"
-ru = "добрый вечер"
 
 [[concepts]]
-en = "thank you"
-uk = "дякую"
-de = "danke"
 fr = "merci"
-es = "gracias"
+uk = "дякую"
 pl = "dziękuję"
+de = "danke"
+es = "gracias"
+en = "thank you"
 ru = "спасибо"
 
 [[concepts]]
-en = "yes"
-uk = "так"
 de = "ja"
-fr = "oui"
-es = "sí"
 pl = "tak"
+uk = "так"
 ru = "да"
+es = "sí"
+fr = "oui"
+en = "yes"
 
 [[concepts]]
-en = "no"
-uk = "ні"
 de = "nein"
 fr = "non"
 es = "no"
-pl = "nie"
 ru = "нет"
+en = "no"
+pl = "nie"
+uk = "ні"
 
 [[concepts]]
-en = "please"
-uk = "будь ласка"
-de = "bitte"
-fr = "s'il vous plaît"
-es = "por favor"
 pl = "proszę"
+fr = "s'il vous plaît"
+en = "please"
+de = "bitte"
+uk = "будь ласка"
 ru = "пожалуйста"
+es = "por favor"
 
 [[concepts]]
 en = "sorry"
 uk = "вибачте"
 de = "entschuldigung"
-fr = "désolé"
 es = "lo siento"
 pl = "przepraszam"
 ru = "извините"
+fr = "désolé"
 
 [[concepts]]
-en = "water"
-uk = "вода"
-de = "wasser"
 fr = "eau"
-es = "agua"
 pl = "woda"
 ru = "вода"
+uk = "вода"
+en = "water"
+de = "wasser"
+es = "agua"
 
 [[concepts]]
-en = "house"
-uk = "будинок"
-de = "haus"
-fr = "maison"
-es = "casa"
-pl = "dom"
 ru = "дом"
+uk = "будинок"
+fr = "maison"
+pl = "dom"
+en = "house"
+de = "haus"
+es = "casa"
 
 [[concepts]]
-en = "cat"
-uk = "кіт"
-de = "katze"
 fr = "chat"
+ru = "кот"
+uk = "кіт"
 es = "gato"
 pl = "kot"
-ru = "кот"
+de = "katze"
+en = "cat"
 
 [[concepts]]
-en = "dog"
-uk = "собака"
-de = "hund"
 fr = "chien"
 es = "perro"
-pl = "pies"
 ru = "собака"
+en = "dog"
+pl = "pies"
+uk = "собака"
+de = "hund"
 
 [[concepts]]
-en = "one"
-uk = "один"
-de = "eins"
-fr = "un"
 es = "uno"
-pl = "jeden"
+fr = "un"
+en = "one"
+de = "eins"
+uk = "один"
 ru = "один"
+pl = "jeden"
 
 [[concepts]]
-en = "two"
-uk = "два"
-de = "zwei"
 fr = "deux"
 es = "dos"
+de = "zwei"
+en = "two"
 pl = "dwa"
 ru = "два"
+uk = "два"
 
 [[concepts]]
-en = "three"
-uk = "три"
 de = "drei"
-fr = "trois"
-es = "tres"
+en = "three"
 pl = "trzy"
+fr = "trois"
 ru = "три"
+uk = "три"
+es = "tres"
+
+[[concepts]]
+uk = "пити"
+de = "trinken"
+en = "drink"
+pl = "drink"
+fr = "boire"
+es = "beber"
+ru = "пить"

@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-toml = "1.0.7"
+toml = "1.1.2"
+eframe = "0.33.3"
 
 [lib]
 name = "lxdb"
