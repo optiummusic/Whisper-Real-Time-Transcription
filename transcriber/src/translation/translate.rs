@@ -6,16 +6,11 @@
 //     → TranslationEvent::Translate per token span
 //
 
-
+use crate::prelude::*;
 use crate::config::{self, TRANSLATION_MUTED};
-use crate::types::{TranscriptEvent, TranslationBuffer, TranslationEvent};
 use crate::utility::utils::{get_base_dir, performance};
-
 use lxdb::{load_file, LxdbError, LxdbReader};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{atomic::Ordering, Arc};
-use tokio::sync::mpsc;
 
 const MAX_NGRAM: usize = 3;
 

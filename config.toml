@@ -1,5 +1,5 @@
-source_lang = "de"
-target_lang = "ru"
+source_lang = "ru"
+target_lang = "fr"
 device = "pipewire"
 use_gpu_fast = true
 use_gpu_acc = true

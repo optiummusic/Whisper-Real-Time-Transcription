@@ -1,28 +1,19 @@
-use std::{sync::Arc};
-
+use translator::prelude::*;
 use eframe::egui::{self};
 use mimalloc::MiMalloc;
-use tokio::{
-    runtime::Handle,
-    sync::{mpsc, oneshot},
-};
+use tokio::runtime::Handle;
 use tracing_subscriber::EnvFilter;
+use translator::{
+    audio,
+    translation::Translator,
+    types::{BackendArgs, AppArgs},
+    utility::utils::init_audio_dumper,
+    vad, whisper,
+    ui::App,
+};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-use translator::{
-    audio,
-    config::{self},
-    translation::Translator,
-    types::{AudioPacket, PhraseChunk, TranscriptEvent, TranslationEvent,
-    BackendArgs, AppArgs},
-    utility::{
-        utils::{init_audio_dumper},
-    },
-    vad, whisper,
-    ui::{App},
-};
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()

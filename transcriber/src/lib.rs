@@ -7,6 +7,7 @@ pub mod utility;
 pub mod vad;
 pub mod whisper;
 pub mod ui;
+pub mod prelude;
 pub use crate::types::{AudioPacket, PhraseChunk, TranscriptEvent};
 use std::sync::Arc;
 

@@ -1,4 +1,4 @@
-use crate::types::AudioPacket;
+use crate::prelude::*;
 use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::{
@@ -6,14 +6,8 @@ use rubato::{
     WindowFunction,
 };
 use std::process::Command;
-#[cfg(target_os = "linux")]
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tracing::{info, warn};
-
-use crate::config::{TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE};
+use crate::config::VAD_CHUNK_SIZE;
 
 static PEAK_LEVEL: AtomicU32 = AtomicU32::new(0);
 

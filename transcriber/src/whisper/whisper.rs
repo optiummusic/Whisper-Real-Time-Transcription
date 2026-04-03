@@ -1,22 +1,38 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use crate::prelude::*;
 use std::sync::mpsc::TrySendError;
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, trace};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
-
-use crate::types::{PhraseChunk, TranscriptEvent};
-use crate::utility::{
-    stats,
-    utils::{append_context, dump_audio_to_file, find_first_file_in_dir},
+use crate::utility::{stats, utils::
+    {
+        append_context, dump_audio_to_file, find_first_file_in_dir
+    },
 };
 use crate::whisper::engine::{WhisperConfig, run_whisper};
 use crate::{Pass1Job, Pass1Result, Pass2Job};
+use crate::whisper::stream_info::StreamInfo;
+struct WhisperWorker {
+    _ctx: WhisperContext,
+    state: whisper_rs::WhisperState,
+}
 
-use crate::config;
-use crate::config::{PASS1_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE};
+impl WhisperWorker {
+    fn load(model_dir: &str, use_gpu: bool, gpu_device: i32) -> Self {
+        let mut ctx_params = WhisperContextParameters::default();
+        ctx_params.use_gpu(use_gpu);
+        if use_gpu { ctx_params.gpu_device(gpu_device); }
 
+        let path = find_first_file_in_dir(model_dir, "bin")
+            .unwrap_or_else(|| panic!("No model found in {model_dir}"));
+
+        let _ctx = WhisperContext::new_with_params(&path, ctx_params)
+            .unwrap_or_else(|e| panic!("Context failed: {e:?}"));
+
+        let state = _ctx.create_state()
+            .unwrap_or_else(|e| panic!("State failed: {e:?}"));
+
+        tracing::info!("WhisperWorker loaded from {:?}", path);
+        Self { _ctx, state }
+    }
+}
 pub async fn pass1_task(
     ready_tx: oneshot::Sender<()>,
     mut rx: mpsc::Receiver<PhraseChunk>,
@@ -27,64 +43,22 @@ pub async fn pass1_task(
     let (res_tx, mut res_rx) = mpsc::channel::<Pass1Result>(8);
 
     std::thread::spawn(move || {
-        let mut s: Option<whisper_rs::WhisperState> = None;
-        let mut _ctx: Option<WhisperContext> = None;
-
+        let mut worker: Option<WhisperWorker> = None;
+        let cfg = config::startup();
         ready_tx.send(()).ok();
 
         while let Some(job) = job_rx.blocking_recv() {
-            if s.is_none() {
-                println!("DEBUG: Pass1: First sound received. Lazy loading model...");
-                let current_cfg = config::startup();
-
-                let mut ctx_params = WhisperContextParameters::default();
-                let use_gpu = current_cfg.use_gpu_fast;
-                ctx_params.use_gpu(use_gpu);
-                if use_gpu { ctx_params.gpu_device(current_cfg.gpu_device_fast); }
-
-                let whisper_path = match find_first_file_in_dir("models/whisper-fast", "bin") {
-                    Some(path) => path,
-                    None => {
-                        println!("CRITICAL: Pass1: No model found in models/whisper-fast!");
-                        panic!("Pass1 missing model");
-                    }
-                };
-
-                println!(
-                    "DEBUG: Pass1: Creating WhisperContext from {:?}",
-                    whisper_path
-                );
-
-                let c = match WhisperContext::new_with_params(&whisper_path, ctx_params) {
-                    Ok(ctx) => ctx,
-                    Err(e) => {
-                        println!("CRITICAL: Pass1: Context failed to load! Error: {:?}", e);
-                        panic!("Pass1 context error");
-                    }
-                };
-
-                println!("DEBUG: Pass1: Context loaded. Creating state...");
-
-                let state = match c.create_state() {
-                    Ok(st) => st,
-                    Err(e) => {
-                        println!("CRITICAL: Pass1: State init failed! Error: {:?}", e);
-                        panic!("Pass1 state error");
-                    }
-                };
-
-                s = Some(state);
-                _ctx = Some(c);
-                println!("DEBUG: Pass1: Fully initialized and ready!");
-            }
-            let state = s.as_mut().unwrap();
+            let w = worker.get_or_insert_with(|| {
+            WhisperWorker::load("models/whisper-fast",
+                    cfg.use_gpu_fast, cfg.gpu_device_fast)
+            });
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
 
             let debug_filename = format!("p1_debug_{}_{}.wav", job.phrase_id, job.chunk_id);
             dump_audio_to_file(&job.audio, &debug_filename);
 
-            let (text, _) = run_whisper(state, &job.audio, &WhisperConfig::fast());
+            let (text, _) = run_whisper(&mut w.state, &job.audio, &WhisperConfig::fast());
 
             let elapsed = t0.elapsed();
             let rtf = t0.elapsed().as_secs_f32() / duration_s.max(0.001);
@@ -186,48 +160,15 @@ pub async fn pass2_task(
     let (res_tx, mut res_rx) = mpsc::channel::<TranscriptEvent>(8);
 
     std::thread::spawn(move || {
-        let mut s: Option<whisper_rs::WhisperState> = None;
-        let mut _ctx: Option<WhisperContext> = None;
+        let mut worker: Option<WhisperWorker> = None;
+        let cfg = config::startup();
         ready_tx.send(()).ok();
 
         for job in job_rx {
-            if s.is_none() {
-                println!("DEBUG: Pass2: First sound received. Lazy loading model...");
-                let current_cfg = config::startup();
-
-                let mut ctx_params = WhisperContextParameters::default();
-                let use_gpu = current_cfg.use_gpu_acc;
-                ctx_params.use_gpu(use_gpu);
-                if use_gpu {ctx_params.gpu_device(current_cfg.gpu_device_acc);}
-
-                let whisper_path = match find_first_file_in_dir("models/whisper-accurate", "bin") {
-                    Some(path) => path,
-                    None => {
-                        println!("CRITICAL: Pass2: No model found in models/whisper-accurate!");
-                        panic!("Pass2 missing model");
-                    }
-                };
-
-                println!(
-                    "DEBUG: Pass2: Creating WhisperContext from {:?}",
-                    whisper_path
-                );
-                let c = WhisperContext::new_with_params(&whisper_path, ctx_params).unwrap_or_else(
-                    |e| {
-                        println!("CRITICAL: Pass2: Context failed to load! Error: {:?}", e);
-                        panic!("Pass2 context error");
-                    },
-                );
-
-                println!("DEBUG: Pass2: Context loaded. Creating state...");
-                s = Some(c.create_state().unwrap_or_else(|e| {
-                    println!("CRITICAL: Pass2: State init failed! Error: {:?}", e);
-                    panic!("Pass2 state error");
-                }));
-                _ctx = Some(c);
-                println!("DEBUG: Pass2: Fully initialized and ready!");
-            }
-            let state = s.as_mut().unwrap();
+            let w = worker.get_or_insert_with(|| {
+            WhisperWorker::load("models/whisper-accurate",
+                    cfg.use_gpu_acc, cfg.gpu_device_acc)
+            });
             let duration_s = job.audio.len() as f32 / TARGET_SAMPLE_RATE as f32;
             let t0 = std::time::Instant::now();
 
@@ -235,7 +176,7 @@ pub async fn pass2_task(
             dump_audio_to_file(&job.audio, &debug_filename);
 
             let (text, _) = run_whisper(
-                state,
+                &mut w.state,
                 &job.audio,
                 &WhisperConfig::accurate(&job.context),
             );
@@ -357,129 +298,3 @@ unsafe extern "C" fn whisper_log_callback(
     _user_data: *mut std::ffi::c_void,
 ) {}
 
-pub struct StreamInfo {
-    current_id: Option<u32>,
-    closed_id: Option<u32>,
-    buffer: Vec<f32>,
-}
-
-impl Default for StreamInfo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StreamInfo {
-    pub fn new() -> Self {
-        Self {
-            current_id: None,
-            closed_id: None,
-            buffer: Vec::with_capacity(STREAM_CHUNK_SAMPLES * 16),
-        }
-    }
-
-    pub fn process_incoming(
-        &mut self,
-        mut chunk: PhraseChunk,
-        rx: &mut mpsc::Receiver<PhraseChunk>,
-    ) -> Option<Pass1Job> {
-        let mut drained = 0;
-        while drained < 8 {
-            match rx.try_recv() {
-                Ok(next) => {
-                    if next.phrase_id > chunk.phrase_id && Some(chunk.phrase_id) == self.current_id
-                    {
-                        debug!("Drained");
-                        self.reset(next.phrase_id);
-                    }
-                    chunk = next;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
-        }
-
-        if let Some(cur) = self.current_id
-            && chunk.phrase_id < cur {
-                return None;
-            }
-        if Some(chunk.phrase_id) != self.current_id {
-            self.reset(chunk.phrase_id);
-        }
-
-        if !chunk.data.is_empty() {
-            self.buffer.extend_from_slice(&chunk.data);
-        }
-
-        if chunk.is_last {
-            self.closed_id = Some(chunk.phrase_id);
-            self.current_id = None;
-        }
-        self.make_job(&chunk)
-    }
-
-    fn is_result_valid(
-        &self,
-        phrase_id: u32,
-        short: bool,
-        is_last: bool,
-        single_pass: bool,
-    ) -> bool {
-        if short {
-            return true;
-        }
-        if is_last && single_pass {
-            return true;
-        }
-        if Some(phrase_id) == self.closed_id {
-            println!("Phrase closed id");
-            return false;
-        }
-        true
-    }
-    fn reset(&mut self, new_id: u32) {
-        self.buffer.clear();
-        self.current_id = Some(new_id);
-        self.closed_id = None;
-    }
-
-    fn make_job(&mut self, chunk: &PhraseChunk) -> Option<Pass1Job> {
-        let len = self.buffer.len();
-        if len < PASS1_MIN_SAMPLES && !chunk.is_last {
-            info!(
-                "{} chunk is less than {}, {}",
-                chunk.chunk_id,
-                PASS1_MIN_SAMPLES,
-                chunk.data.len()
-            );
-            return None;
-        }
-
-        let window = if chunk.is_last {
-            config::max_window()
-        } else {
-            config::min_window()
-        };
-
-        let audio = if len > window {
-            self.buffer[len - window..].to_vec()
-        } else {
-            self.buffer.to_vec()
-        };
-
-        let phrase_id = chunk.phrase_id;
-        let chunk_id = chunk.chunk_id;
-
-        if chunk.is_last {
-            self.buffer.clear();
-        }
-        trace!("[MAKE JOB]{} phrase, {} chunk is sent", phrase_id, chunk_id);
-        Some(Pass1Job {
-            phrase_id,
-            chunk_id,
-            short: chunk.short,
-            is_last: chunk.is_last,
-            audio,
-        })
-    }
-}

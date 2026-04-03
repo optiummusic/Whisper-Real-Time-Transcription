@@ -1,17 +1,10 @@
-use std::collections::VecDeque;
+use crate::prelude::*;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-
 use ndarray::{Array, Array3};
 use ort::{inputs, session::Session, value::TensorValueType, value::Value};
-use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
-
 use crate::config::{
-    self, STITCH_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, TARGET_SAMPLE_RATE, VAD_CHUNK_SIZE,
+    self, STITCH_MIN_SAMPLES, STREAM_CHUNK_SAMPLES, VAD_CHUNK_SIZE,
 };
-use crate::types::{AudioPacket, PhraseChunk};
 use crate::utility::stats;
 
 pub struct VadEngine {

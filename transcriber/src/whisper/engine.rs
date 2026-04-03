@@ -1,5 +1,4 @@
 use std::time::Instant;
-
 use crate::config;
 use whisper_rs::{FullParams, SamplingStrategy};
 
